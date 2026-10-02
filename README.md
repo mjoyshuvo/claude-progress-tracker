@@ -2,6 +2,17 @@
 
 A Claude Code mod that draws a live progress bar for your task list and plan in the band above the prompt.
 
+## Install
+
+Run these two commands inside Claude Code (terminal or desktop app):
+
+```
+/plugin marketplace add mjoyshuvo/progress-tracker
+/plugin install progress-tracker@mjoyshuvo-mods
+```
+
+Start a new session, then type `/progress-tracker-demo` to check that it works. Mods are an early-access Claude Code feature: they need Claude Code 2.1.287 or later, with function hooks switched on for your account.
+
 - One row per task list. The label is the approved plan's title, or the first task.
 - The bar is a rounded capsule, 2 terminal rows tall (drawn with quadrant blocks as a 4-pixel-high canvas). Its dot field is sparse on the left and denser toward the pill, and it twinkles and shimmers while Claude works. It holds still when idle or done.
 - The pill shows the current task and step (`Write tests 3/5`). The percent counts finished tasks; the time since the list started sits next to it.
