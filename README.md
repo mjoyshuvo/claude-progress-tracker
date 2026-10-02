@@ -7,7 +7,7 @@ A Claude Code mod that draws a live progress bar for your task list and plan in 
 Run these two commands inside Claude Code (terminal or desktop app):
 
 ```
-/plugin marketplace add mjoyshuvo/progress-tracker
+/plugin marketplace add mjoyshuvo/claude-progress-tracker
 /plugin install progress-tracker@mjoyshuvo-mods
 ```
 
