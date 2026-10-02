@@ -11,6 +11,11 @@ Run these two commands inside Claude Code (terminal or desktop app):
 /plugin install progress-tracker@mjoyshuvo-mods
 ```
 
+### Good to know
+
+- The mod adds its own `progress_tracker` tool and a short instruction telling Claude to use it for tasks with more than about 3 steps. The desktop app has no built-in task tool, so this is how the bar gets its tasks there.
+- Only one mod can draw in the band above the prompt at a time. If you also use `plan-progress`, turn one of them off: `claude plugin disable plan-progress@zycck-mods`.
+
 Start a new session, then type `/progress-tracker-demo` to check that it works. Mods are an early-access Claude Code feature: they need Claude Code 2.1.287 or later, with function hooks switched on for your account.
 
 - One row per task list. The label is the approved plan's title, or the first task.

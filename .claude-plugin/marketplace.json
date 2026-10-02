@@ -1,6 +1,9 @@
 {
   "name": "mjoyshuvo-mods",
-  "owner": { "name": "mjoyshuvo" },
+  "owner": {
+    "name": "mjoyshuvo"
+  },
+  "description": "Claude Code mods by mjoyshuvo.",
   "plugins": [
     {
       "name": "progress-tracker",
