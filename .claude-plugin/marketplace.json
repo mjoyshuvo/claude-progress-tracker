@@ -1,0 +1,11 @@
+{
+  "name": "mjoyshuvo-mods",
+  "owner": { "name": "mjoyshuvo" },
+  "plugins": [
+    {
+      "name": "progress-tracker",
+      "source": "./",
+      "description": "A live, glittery progress bar for tasks and plans, drawn above the prompt in the terminal and the desktop app."
+    }
+  ]
+}
