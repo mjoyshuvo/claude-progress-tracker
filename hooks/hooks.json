@@ -1,0 +1,4 @@
+{
+  "description": "Tracks TaskCreate, TaskUpdate, TodoWrite and approved plans, and draws one progress bar per list above the prompt",
+  "modules": ["./progress-tracker.mjs"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "progress-tracker",
+  "version": "0.1.0",
+  "description": "A live progress bar for the current task list and plan, drawn in the band above the prompt.",
+  "author": { "name": "Mrityunjoy Das" },
+  "types": "./types/index.d.ts"
+}
