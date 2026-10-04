@@ -170,6 +170,28 @@ describe("progress-tracker", () => {
     await $.ui.press({ plugin: "progress-tracker", key } as any);
     expect(textOf(await $.ui.render(BAND))).toBe("");
   });
+  test("a finished desktop bar expands to show each task's tokens", async ($, on) => {
+    world(on);
+    const usage = { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: "m" };
+    on("turn.step", async function* (_$: any, e: any) {
+      return { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: "end_turn", usage };
+    });
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await tasks($, ["Build", "Ship"]);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "in_progress" } as any);
+    const step = $.turn.step({ turnId: "t", index: 0, model: "m", messageCount: 1 } as any);
+    for await (const _ of step);
+    await step.result;
+    await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "2", status: "completed" } as any);
+
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await $.ui.press({ plugin: "progress-tracker", key } as any);
+    const text = textOf(await $.ui.render(DESK));
+    expect(text).toContain("Build");
+    expect(text).toContain("1.5k tokens");
+  });
   test("on desktop an SVG draws the bar, moving only while working", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
@@ -205,6 +227,12 @@ describe("progress-tracker", () => {
     await $.tool.call({ tool: TOOL, next: true } as any);
     const last: any = await $.tool.call({ tool: TOOL, next: true } as any);
     expect(last.result).toBe("3/3, done");
+  });
+  test("the progress_tracker tool is always loaded", async ($, on) => {
+    world(on);
+    on("tool.describe", (_$: any, e: any) => ({ description: e.description, isDeferred: true }));
+    const described: any = await $.tool.describe({ tool: "mcp__progress-tracker__progress_tracker", description: "d" } as any);
+    expect(described.isDeferred).toBe(false);
   });
   test("/progress-tracker-demo plays a run that fails, recovers, finishes and clears", async ($, on) => {
     const { clock } = world(on);

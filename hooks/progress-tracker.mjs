@@ -49,7 +49,7 @@ export function register(on) {
     await $.tool.register({
       name: TOOL_NAME,
       description:
-        "Live progress bar above the prompt. Create with title + tasks; update with next, active, failed or fixed.",
+        "Live progress bar above the prompt. Use it for any work over ~3 edits/commands: create with title + 3-8 short tasks, then call with next per finished task, active, failed or fixed. Don't mention the bar.",
       inputSchema: {
         type: "object",
         properties: {
@@ -75,6 +75,9 @@ export function register(on) {
     const result = await next(e);
     return { sections: [...result.sections, { id: "progress-tracker:rules", text: RULES, scope: "session" }] };
   });
+
+  // Org security mods can bypass user-tier prompt.compose, so the tool carries its own rule and stays loaded.
+  on("tool.describe", { tool: TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }));
 
   on("tool.call", { tool: TOOL }, async ($, e) => {
     if (Array.isArray(e.tasks) && e.tasks.length > 0) {
@@ -226,6 +229,22 @@ export function register(on) {
     return r;
   });
 
+  // Each main-loop model call's tokens go to the task in progress, for the expanded list.
+  on("turn.step", async function* ($, e, next) {
+    const r = yield* next(e);
+    const u = r?.usage;
+    if (e.agentId || !u) return r;
+    const tokens = u.input_tokens + u.output_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+    await update($, (tracks) => {
+      const active = activeOf(tracks);
+      const at = active?.tasks.findIndex((t) => t.status === "in_progress") ?? -1;
+      if (at === -1) return tracks;
+      const tasks = active.tasks.map((t, i) => (i === at ? { ...t, tokens: (t.tokens ?? 0) + tokens } : t));
+      return replace(tracks, { ...active, tasks });
+    });
+    return r;
+  });
+
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey) {
       animate($, null, []);
@@ -236,12 +255,14 @@ export function register(on) {
     const ui = $.ui.resolve(e);
     const dismiss = (id) => () =>
       void update($, (all) => all.map((t) => (t.id === id ? { ...t, isDismissed: true } : t)));
+    const toggle = (id) => () =>
+      void update($, (all) => all.map((t) => (t.id === id ? { ...t, isExpanded: !t.isExpanded } : t)));
 
     // Off the terminal there is no Raster: an SVG draws the bar and SMIL moves it.
     if (e.surface !== "terminal") {
       animate($, null, []);
       if (shown.length === 0) return next(e);
-      return drawDesktop(ui, shown.slice(-MAX_ROWS), e.props, dismiss);
+      return drawDesktop(ui, shown.slice(-MAX_ROWS), e.props, dismiss, toggle);
     }
 
     const rows = shown
@@ -284,7 +305,7 @@ function stampDone($, track) {
     try {
       $.clock.after(DONE_LINGER_MS, () =>
         void update($, (all) =>
-          all.map((t) => (t.id === track.id && t.doneAt === doneAt ? { ...t, isDismissed: true } : t)),
+          all.map((t) => (t.id === track.id && t.doneAt === doneAt && !t.isExpanded ? { ...t, isDismissed: true } : t)),
         ),
       );
     } catch {
@@ -348,10 +369,12 @@ async function playDemo($) {
   await update($, (tracks) => {
     const track = newTrack(tracks, "Demo: ship a feature");
     id = track.id;
+    const tokens = [8400, 42100, 23800, 11600, 3900];
     const tasks = ["Plan", "Build", "Test", "Review", "Ship"].map((subject, i) => ({
       id: `demo${i + 1}`,
       subject,
       status: i === 0 ? "in_progress" : "pending",
+      tokens: tokens[i],
     }));
     return [...tracks, { ...track, tasks, isDemo: true }];
   });
@@ -361,7 +384,7 @@ async function playDemo($) {
     at += delay;
     $.clock.after(at, () => void onDemo((t) => applyOps(t, ops)));
   }
-  $.clock.after(at + DEMO_LINGER_MS, () => void update($, (tracks) => tracks.filter((t) => t.id !== id)));
+  $.clock.after(at + DEMO_LINGER_MS, () => void update($, (tracks) => tracks.filter((t) => t.id !== id || t.isExpanded)));
 }
 
 // Done and waiting-for-approval bars hold still; the rest move while Claude works.
@@ -524,6 +547,8 @@ function rowOf(track, columns) {
     done,
     total,
     isDemo: track.isDemo === true,
+    isExpanded: track.isExpanded === true,
+    tasks: track.tasks,
     elapsed: track.startedAt ? durationOf((track.doneAt ?? Date.now()) - track.startedAt) : "",
     reason: track.failedCommand ? shorten(track.failedCommand, 60) : null,
     bar: hasRoom ? { key: `bar:${track.id}`, width, done, total, status, pill } : null,
@@ -559,11 +584,11 @@ function draw({ Box, Text, Button, Raster }, row, onDismiss) {
 
 // The desktop band: every bar the same width, pinned right so rows line up.
 // The desktop reports about 8 CSS px per column.
-function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss) {
+function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle) {
   const rows = tracks.map((t) => rowOf(t, 200));
   const total = Math.max(320, (props.bodyColumns || 100) * 8);
   const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...rows.map((r) => r.label.length * 6.4)));
-  const width = Math.max(140, Math.min(1400, Math.round(total - titleWidth - 140)));
+  const width = Math.max(140, Math.min(1400, Math.round(total - titleWidth - 210)));
   return Box({
     flexDirection: "column",
     gap: 1,
@@ -578,8 +603,8 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss) {
             isInteractive: isMoving || undefined,
           })
         : Text({ color: PILL[r.status].bg, children: r.pill });
-      return Box({
-        key: r.id,
+      const isDone = r.status === "done";
+      const line = Box({
         flexDirection: "row",
         alignItems: "center",
         gap: 1,
@@ -588,8 +613,35 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss) {
           Text({ wrap: "truncate", children: r.label }),
           Box({ flexGrow: 1 }),
           bar,
-          Text({ dimColor: true, children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}` }),
+          Box({
+            flexShrink: 0,
+            children: [Text({ dimColor: true, wrap: "truncate", children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}` })],
+          }),
+          isDone
+            ? Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▾" : "▸", plain: true, dimColor: true, onPress: toggle(r.id) })
+            : null,
           Button({ key: `dismiss:${r.id}`, label: "✕", plain: true, dimColor: true, onPress: dismiss(r.id) }),
+        ].filter(Boolean),
+      });
+      if (!(isDone && r.isExpanded)) return Box({ key: r.id, children: [line] });
+      return Box({
+        key: r.id,
+        flexDirection: "column",
+        children: [
+          line,
+          ...r.tasks.map((t, i) =>
+            Box({
+              key: `${r.id}:${i}`,
+              flexDirection: "row",
+              gap: 1,
+              children: [
+                Text({ color: DOT.done, children: "  ✓" }),
+                Text({ wrap: "truncate", children: t.subject }),
+                Box({ flexGrow: 1 }),
+                Text({ dimColor: true, children: t.tokens ? `${tokensOf(t.tokens)} tokens` : "—" }),
+              ],
+            }),
+          ),
         ],
       });
     }),
@@ -643,6 +695,12 @@ function base64Of(bytes) {
 }
 
 // 45s, 2m 14s, 1h 05m.
+function tokensOf(n) {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 function durationOf(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;

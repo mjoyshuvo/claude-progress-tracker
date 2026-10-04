@@ -32,9 +32,9 @@ export function barSvg({ width, done, total, status, pill, isMoving }) {
   const fillEnd = Math.max(pillX + r, fillX);
 
   const parts = [
-    // A moving bar is drawn in a sandboxed frame whose page is white; paint the
-    // corners outside the rounded track in the band's colour when the app is dark.
-    isMoving ? `<style>.bd{fill:none}@media (prefers-color-scheme:dark){.bd{fill:${BAND_DARK}}}</style><rect class="bd" width="${width}" height="${h}"/>` : "",
+    // A moving bar is drawn in a sandboxed frame; without a matching color-scheme the browser paints
+    // an opaque white backdrop. The corners outside the track take the band's colour when dark.
+    isMoving ? `<style>:root{color-scheme:light dark}.bd{fill:none}@media (prefers-color-scheme:dark){.bd{fill:${BAND_DARK}}}</style><rect class="bd" width="${width}" height="${h}"/>` : "",
     `<defs><clipPath id="track"><rect width="${width}" height="${h}" rx="${r}"/></clipPath>`,
     `<clipPath id="fill"><rect width="${fillEnd}" height="${h}"/></clipPath>`,
     `<linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/>`,
