@@ -2,6 +2,10 @@ export type ProgressTask = {
   id: string;
   subject: string;
   status: "pending" | "in_progress" | "completed";
+  startedAt?: number | null;
+  doneAt?: number | null;
+  isSkipped?: boolean;
+  tokens?: number;
 };
 
 export type ProgressTrack = {

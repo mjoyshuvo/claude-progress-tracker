@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "claude-code/testing";
+import { timeLeftOf } from "../hooks/progress-tracker.mjs";
 
 const BAND = {
   surface: "terminal",
@@ -215,7 +216,7 @@ describe("progress-tracker", () => {
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
 
     const created: any = await $.tool.call({ tool: TOOL, title: "Ship docs", tasks: ["Draft", "Review", "Publish"] } as any);
-    expect(created.result).toBe('0/3, running, active "Draft"');
+    expect(created.result).toBe('0/3, running, active "Draft", next "Review"');
     expect(textOf(await $.ui.render(DESK))).toContain("Ship docs: Draft 1/3, 0%");
 
     await $.tool.call({ tool: TOOL, next: true } as any);
@@ -223,7 +224,7 @@ describe("progress-tracker", () => {
     expect(textOf(await $.ui.render(DESK))).toContain("✕ Review 2/3");
 
     const fixed: any = await $.tool.call({ tool: TOOL, fixed: true } as any);
-    expect(fixed.result).toBe('1/3, running, active "Review"');
+    expect(fixed.result).toBe('1/3, running, active "Review", next "Publish"');
     await $.tool.call({ tool: TOOL, next: true } as any);
     const last: any = await $.tool.call({ tool: TOOL, next: true } as any);
     expect(last.result).toBe("3/3, done");
@@ -254,7 +255,7 @@ describe("progress-tracker", () => {
     await clock.advance(3500);
     expect(textOf(await $.ui.render(BAND))).toBe("");
   });
-  test("plan mode shows Planning, waits amber for approval, then becomes the plan's bar", async ($, on) => {
+  test("plan mode shows Planning, waits amber, finishes green, and the plan gets its own bar", async ($, on) => {
     const PLAN = "# Add dark mode\n\n1. Add theme tokens\n2. Wire the toggle\n3. Test both themes";
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
@@ -269,7 +270,7 @@ describe("progress-tracker", () => {
     await $.classic.UserPromptSubmit({ prompt: "plan dark mode", permission_mode: "plan" } as any);
     let drawn = textOf(await $.ui.render(DESK));
     expect(drawn).toContain("Planning");
-    expect(drawn).toContain("Explore 1/3");
+    expect(drawn).toContain("Explore 1/2");
 
     const asking = $.tool.call({ tool: "ExitPlanMode", plan: PLAN } as any);
     await new Promise((r) => setTimeout(r, 20));
@@ -277,24 +278,112 @@ describe("progress-tracker", () => {
 
     release();
     await asking;
-    drawn = textOf(await $.ui.render(DESK));
-    expect(drawn).toContain("Add dark mode: Add theme tokens 1/3");
+    let lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines[0]).toContain("Planning: ✓ Done");
+    expect(lines[1]).toContain("Add dark mode: Add theme tokens 1/3");
 
     const TOOL = "mcp__progress-tracker__progress_tracker";
     await $.tool.call({ tool: TOOL, title: "x", tasks: ["Tokens", "Toggle", "Test"] } as any);
-    const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("Add dark mode: Tokens 1/3");
+    lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("Add dark mode: Tokens 1/3");
   });
 
-  test("a rejected plan goes back to writing", async ($, on) => {
+  test("a rejected plan still finishes the planning bar", async ($, on) => {
     on("tool.call", { tool: "ExitPlanMode" }, () => ({ deny: "not yet" }));
     world(on);
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
     await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
-    expect(textOf(await $.ui.render(DESK))).toContain("Write plan 2/3");
+    const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Planning: ✓ Done");
+  });
+
+  test("in plan mode each tool call becomes a step, until Claude sends its own list", async ($, on) => {
+    world(on);
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await $.tool.call({ tool: "Bash", command: "grep -r x .", description: "Find plugin files" } as any);
+    await $.tool.call({ tool: "Read", file_path: "/a/b/source.mjs" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Planning: Explore 3/4, 50%");
+    await $.tool.call({ tool: "Write", file_path: "/plans/plan.md", content: "x" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Write plan 4/5");
+
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    await $.tool.call({ tool: TOOL, title: "Plan the fix", tasks: ["Read code", "Write plan"] } as any);
+    await $.tool.call({ tool: "Read", file_path: "/a/c.mjs" } as any);
+    const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Plan the fix: Read code 1/2");
+  });
+
+  test("add appends found work and skip closes the current task", async ($, on) => {
+    world(on);
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["One", "Two"] } as any);
+    const added: any = await $.tool.call({ tool: TOOL, add: ["Three"] } as any);
+    expect(added.result).toBe('0/3, running, active "One", next "Two"');
+    const skipped: any = await $.tool.call({ tool: TOOL, skip: true } as any);
+    expect(skipped.result).toBe('1/3, running, active "Two", next "Three"');
+  });
+
+  test("a question to the person turns the bar amber until it is answered", async ($, on) => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    on("tool.call", { tool: "AskUserQuestion" }, async () => {
+      await held;
+      return { result: {} };
+    });
+    world(on);
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: "mcp__progress-tracker__progress_tracker", title: "Job", tasks: ["One", "Two"] } as any);
+    const asking = $.tool.call({ tool: "AskUserQuestion", questions: [] } as any);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(textOf(await $.ui.render(DESK))).toContain("Waiting for you");
+    release();
+    await asking;
+    expect(textOf(await $.ui.render(DESK))).toContain("One 1/2");
+  });
+
+  test("time left is the mean finished-task time times the tasks left, from two timed tasks", () => {
+    const done = (min: number) => ({ id: "x", subject: "x", status: "completed", startedAt: 0, doneAt: min * 60_000 });
+    const open = { id: "y", subject: "y", status: "pending" };
+    expect(timeLeftOf([done(1), open, open] as any)).toBe("");
+    expect(timeLeftOf([done(1), done(2), open, open] as any)).toBe("~3m left");
+    expect(timeLeftOf([done(1), done(2)] as any)).toBe("");
+  });
+
+  test("a long run of work with no bar update gets one quiet nudge", async ($, on) => {
+    world(on);
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["One", "Two"] } as any);
+    const results: any[] = [];
+    for (let i = 0; i < 12; i++) results.push(await $.tool.call({ tool: "Read", file_path: `/f${i}` } as any));
+    expect(results.slice(0, 11).every((r) => !r.context)).toBe(true);
+    expect(results[11].context.join("")).toContain('"One"');
+    await $.tool.call({ tool: TOOL, next: true } as any);
+    const after: any = await $.tool.call({ tool: "Read", file_path: "/g" } as any);
+    expect(after.context).toBeUndefined();
+  });
+
+  test("a failing check shows its error line, and only real checks count", async ($, on) => {
+    on("tool.call", { tool: "Bash" }, () => ({ result: { stdout: "collected 3\nFAILED tests/a.py::t - boom\n" }, isError: true }));
+    world(on);
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: "mcp__progress-tracker__progress_tracker", title: "Job", tasks: ["Fix", "Ship"] } as any);
+    for (const command of ["go run main.go", "git checkout main", "npm run dev", "test -f x"]) {
+      await $.tool.call({ tool: "Bash", command } as any);
+    }
+    expect(textOf(await $.ui.render(DESK))).not.toContain("✕ Fix");
+    await $.tool.call({ tool: "Bash", command: "FOO=1 .venv/bin/pytest tests -x" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("(FAILED tests/a.py::t - boom)");
   });
   test("a non-check command that exits 1 does not turn the row red", async ($, on) => {
     on("tool.call", { tool: "Bash" }, () => ({ result: {}, isError: true }));
@@ -338,7 +427,7 @@ describe("progress-tracker", () => {
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Write the parser", "Write tests", "Ship"] } as any);
     const moved: any = await $.tool.call({ tool: TOOL, active: "tests" } as any);
-    expect(moved.result).toBe('1/3, running, active "Write tests"');
+    expect(moved.result).toBe('1/3, running, active "Write tests", next "Ship"');
     const missing: any = await $.tool.call({ tool: TOOL, active: "deploy" } as any);
     expect(missing.deny).toContain('no task named "deploy"');
   });

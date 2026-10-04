@@ -36,7 +36,7 @@ let queue = Promise.resolve();
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
 const RULES = `# Progress bar
-Work over ~3 edits/commands: call ${TOOL} with {title, tasks:[3-8 short names]}, then {next:true} per finished task, {active:"name"}, {failed:"why"}, {fixed:true}. Don't mention the bar.`;
+Work over ~3 edits/commands, plan mode included: call ${TOOL} with {title, tasks:[3-8 short names]}, then {next:true} per finished task, {active:"name"}, {add:["found work"]}, {skip:true}, {failed:"why"}, {fixed:true}. Don't mention the bar.`;
 
 export function register(on) {
   on("session.start", async ($, e, next) => {
@@ -49,7 +49,7 @@ export function register(on) {
     await $.tool.register({
       name: TOOL_NAME,
       description:
-        "Live progress bar above the prompt. Use it for any work over ~3 edits/commands: create with title + 3-8 short tasks, then call with next per finished task, active, failed or fixed. Don't mention the bar.",
+        "Live progress bar above the prompt. Use it for any work over ~3 edits/commands, plan mode included: create with title + 3-8 short tasks, then call with next per finished task, active, add, skip, failed or fixed. Don't mention the bar.",
       inputSchema: {
         type: "object",
         properties: {
@@ -57,6 +57,8 @@ export function register(on) {
           tasks: { type: "array", items: { type: "string" }, description: "Every task in order; only when creating" },
           next: { type: "boolean", description: "Current task finished, start the next one" },
           active: { type: "string", description: "Task now in progress" },
+          add: { type: "array", items: { type: "string" }, description: "Tasks found mid-run, appended to the list" },
+          skip: { type: "boolean", description: "Current task is not needed; close it and start the next" },
           failed: { type: "string", description: "What broke, one line" },
           fixed: { type: "boolean", description: "The failure is resolved" },
         },
@@ -87,10 +89,13 @@ export function register(on) {
         status: i === 0 ? "in_progress" : "pending",
       }));
       await update($, (tracks) => {
-        // A just-approved plan's bar takes Claude's list instead of a second bar.
+        // A just-approved plan's bar, or a planning bar still guessing its steps, takes Claude's list.
         const active = activeOf(tracks);
         const isFreshPlan = active?.isFromPlan && !active.tasks.some((t) => t.status === "completed");
-        if (isFreshPlan) return replace(tracks, { ...active, tasks, failedCommand: null, isFromPlan: false });
+        if (isFreshPlan || active?.isAutoSteps) {
+          const label = active.isAutoSteps && e.title ? String(e.title) : active.label;
+          return replace(tracks, { ...active, label, tasks, failedCommand: null, isFromPlan: false, isAutoSteps: false });
+        }
         return [...tracks, { ...newTrack(tracks, e.title ? String(e.title) : null), tasks }];
       });
     } else {
@@ -109,16 +114,19 @@ export function register(on) {
       return { deny: `${TOOL_NAME}: no task named "${e.active}"; tasks are ${names}.` };
     }
     const done = active.tasks.filter((t) => t.status === "completed").length;
-    const current = active.tasks.find((t) => t.status === "in_progress");
+    const at = active.tasks.findIndex((t) => t.status === "in_progress");
+    const upcoming = active.tasks.slice(at + 1).find((t) => t.status === "pending");
     const state = isComplete(active) ? "done" : active.failedCommand ? "failed" : "running";
-    return {
-      result: `${done}/${active.tasks.length}, ${state}${current ? `, active "${current.subject}"` : ""}`,
-    };
+    const parts = [`${done}/${active.tasks.length}`, state];
+    if (at !== -1) parts.push(`active "${active.tasks[at].subject}"`);
+    if (at !== -1 && upcoming) parts.push(`next "${upcoming.subject}"`);
+    return { result: parts.join(", ") };
   });
 
-  // Plan mode: a "Planning" bar (Explore → Write plan → Approval) from the first
-  // prompt or tool call made in plan mode; a Write or Edit there is the plan.
-  // The engine attaches a plan_mode note to every turn in plan mode: the surest sign.
+  // Plan mode: a "Planning" bar from the first prompt or tool call made in plan mode.
+  // Claude's own progress_tracker list replaces its steps; until then each tool call
+  // becomes a done step, so the bar moves. The plan_mode note on every plan-mode
+  // turn is the surest sign.
   on("prompt.attachment", { type: "plan_mode" }, async ($, e, next) => {
     await startPlanning($);
     return next(e);
@@ -137,32 +145,53 @@ export function register(on) {
   on("classic.PreToolUse", async ($, e, next) => {
     if (e.permission_mode === "plan" && !e.agent_id) {
       await startPlanning($);
-      if (e.tool_name === "Write" || e.tool_name === "Edit") await onPlanning($, (t) => toStep(t, 1));
     }
     return next(e);
   });
 
-  // Asking for approval turns the bar amber until the person answers. Approved,
-  // the plan's own steps become the bar's tasks; rejected, it goes back to writing.
+  on("tool.call", async ($, e, next) => {
+    const r = await next(e);
+    if (e.agentId || NOT_A_STEP.has(e.tool)) return r;
+    await onPlanning($, (t) => (t.isAutoSteps && !t.isWaiting ? autoStep(t, e) : t));
+    const nudge = await countWork($);
+    return nudge && r.deny === undefined ? { ...r, context: [...(r.context ?? []), nudge] } : r;
+  });
+
+  // Asking for approval turns the bar amber until the person answers. Either answer
+  // ends this round of planning (green); approved, the plan's steps get a bar of their own.
   on("tool.call", { tool: "ExitPlanMode" }, async ($, e, next) => {
     if (e.agentId) return next(e);
-    await startPlanning($);
-    await onPlanning($, (t) => ({ ...toStep(t, 2), isWaiting: true }));
+    await onPlanning($, (t) => ({ ...toStep(t, t.tasks.length - 1), isWaiting: true }));
     const r = await next(e);
-    if (!isAnswered(r)) {
-      await onPlanning($, (t) => ({ ...toStep(t, 1), isWaiting: false }));
-      return r;
-    }
-    const plan = typeof e.plan === "string" ? e.plan : r.result?.plan;
     await onPlanning($, (t) => ({
-      ...t,
-      label: planTitleOf(plan),
-      tasks: planStepsOf(plan),
+      ...toStep(t, t.tasks.length),
       isPlanning: false,
       isWaiting: false,
-      isFromPlan: true,
+      isAutoSteps: false,
     }));
+    if (!isAnswered(r)) return r;
+    const plan = typeof e.plan === "string" ? e.plan : r.result?.plan;
+    await update($, (tracks) => [
+      ...tracks,
+      { ...newTrack(tracks, planTitleOf(plan)), tasks: planStepsOf(plan), isFromPlan: true },
+    ]);
     return r;
+  });
+
+  // A question to the person turns the working bar amber until it is answered.
+  on("tool.call", { tool: "AskUserQuestion" }, async ($, e, next) => {
+    if (e.agentId) return next(e);
+    const setWaiting = (isWaiting) =>
+      update($, (tracks) => {
+        const active = activeOf(tracks);
+        return active && !isComplete(active) ? replace(tracks, { ...active, isWaiting }) : tracks;
+      });
+    await setWaiting(true);
+    try {
+      return await next(e);
+    } finally {
+      await setWaiting(false);
+    }
   });
 
   on("tool.call", { tool: "TaskCreate" }, async ($, e, next) => {
@@ -220,9 +249,11 @@ export function register(on) {
     await update($, (tracks) => {
       const active = activeOf(tracks);
       if (!active || isComplete(active)) return tracks;
-      if (r.isError && isCheck(command)) return replace(tracks, { ...active, failedCommand: command });
+      if (r.isError && isCheck(command)) {
+        return replace(tracks, { ...active, failedCommand: command, failedReason: errorLineOf(r.result) });
+      }
       if (!r.isError && active.failedCommand && sameCheck(active.failedCommand, command)) {
-        return replace(tracks, { ...active, failedCommand: null });
+        return replace(tracks, { ...active, failedCommand: null, failedReason: null });
       }
       return tracks;
     });
@@ -287,11 +318,24 @@ function update($, change) {
       const { value: tracks = [] } = await $.state.get(TRACKS);
       let changed = change(tracks);
       if (changed === tracks) return;
-      changed = changed.map((t) => stampDone($, t));
+      changed = changed.map((t) => stampDone($, stampTasks(t)));
       await $.state.set(TRACKS, changed);
     })
     .catch(() => undefined);
   return queue;
+}
+
+// Notes when each task starts and finishes, for the time-left guess. A reopened task loses its finish.
+function stampTasks(track) {
+  const now = Date.now();
+  const tasks = track.tasks.map((t) => {
+    if (t.status === "in_progress" && (t.startedAt == null || t.doneAt != null)) {
+      return { ...t, startedAt: t.startedAt ?? now, doneAt: null };
+    }
+    if (t.status === "completed" && t.doneAt == null) return { ...t, doneAt: now };
+    return t;
+  });
+  return tasks.every((t, i) => t === track.tasks[i]) ? track : { ...track, tasks };
 }
 
 // Notes when a track finishes (to freeze its clock) and hides it a minute later.
@@ -394,18 +438,62 @@ function isLive(status) {
 
 // ---- plan mode ----
 
-const PLANNING_STEPS = ["Explore", "Write plan", "Approval"];
+// Counts work calls since the bar last moved. After NUDGE_AFTER of them Claude gets one
+// note it alone reads, so a forgotten {next:true} does not freeze the bar.
+const NUDGE_AFTER = 12;
+
+async function countWork($) {
+  let nudge = null;
+  await update($, (tracks) => {
+    const active = activeOf(tracks);
+    if (!active || active.isAutoSteps || isComplete(active)) return tracks;
+    const key = active.tasks.map((t) => t.status).join(",");
+    const calls = key === active.statusKey ? (active.callsSinceMove ?? 0) + 1 : 1;
+    if (calls >= NUDGE_AFTER) {
+      const current = active.tasks.find((t) => t.status === "in_progress");
+      const done = active.tasks.filter((t) => t.status === "completed").length;
+      nudge = `The progress bar still shows "${current?.subject ?? "nothing"}" in progress (${done}/${active.tasks.length}). If that task is done, update it now (${TOOL_NAME} next/active, or TaskUpdate). Don't mention this note.`;
+    }
+    return replace(tracks, { ...active, statusKey: key, callsSinceMove: nudge ? 0 : calls });
+  });
+  return nudge;
+}
+
+// Tools that are bookkeeping, not work: they never become a planning step.
+const NOT_A_STEP = new Set([TOOL, "ExitPlanMode", "AskUserQuestion", "ToolSearch", "TaskCreate", "TaskUpdate", "TodoWrite"]);
 
 async function startPlanning($) {
   await update($, (tracks) => {
     if (tracks.some((t) => t.isPlanning && !t.isDismissed)) return tracks;
-    const tasks = PLANNING_STEPS.map((subject, i) => ({
-      id: `plan${i + 1}`,
-      subject,
-      status: i === 0 ? "in_progress" : "pending",
-    }));
-    return [...tracks, { ...newTrack(tracks, "Planning"), tasks, isPlanning: true }];
+    const tasks = [
+      { id: "plan1", subject: "Explore", status: "in_progress" },
+      { id: "approval", subject: "Approval", status: "pending" },
+    ];
+    return [...tracks, { ...newTrack(tracks, "Planning"), tasks, isPlanning: true, isAutoSteps: true }];
   });
+}
+
+// The step in progress is done and named after the call; a new one starts before Approval.
+function autoStep(track, call) {
+  const at = track.tasks.findIndex((t) => t.status === "in_progress");
+  if (at === -1) return track;
+  const isWrite = call.tool === "Write" || call.tool === "Edit";
+  const done = { ...track.tasks[at], subject: stepNameOf(call), status: "completed" };
+  const following = { id: `plan${at + 2}`, subject: isWrite ? "Write plan" : "Explore", status: "in_progress" };
+  return { ...track, tasks: [...track.tasks.slice(0, at), done, following, ...track.tasks.slice(at + 1)] };
+}
+
+export function stepNameOf(call) {
+  const file = String(call.file_path ?? call.path ?? "").split("/").filter(Boolean).at(-1);
+  const name =
+    call.description ??
+    (call.tool === "Read" && file ? `Read ${file}` : null) ??
+    (call.tool === "Write" && file ? `Write ${file}` : null) ??
+    (call.tool === "Edit" && file ? `Edit ${file}` : null) ??
+    (call.pattern ? `Search ${call.pattern}` : null) ??
+    (call.tool === "Bash" ? String(call.command ?? "").trim().split(/\s+/)[0] || "Run a command" : null) ??
+    String(call.tool ?? "Step").replace(/^mcp__.*__/, "");
+  return shorten(String(name).replace(/\s+/g, " ").trim(), 40);
 }
 
 function onPlanning($, change) {
@@ -451,11 +539,20 @@ function planStepsOf(plan) {
 function applyOps(track, ops) {
   let tasks = track.tasks;
   let failedCommand = track.failedCommand;
-  if (ops.next === true) {
+  if (Array.isArray(ops.add) && ops.add.length > 0) {
+    const added = ops.add.map((subject, i) => ({ id: `add${tasks.length + i + 1}`, subject: String(subject), status: "pending" }));
+    tasks = [...tasks, ...added];
+    if (!tasks.some((t) => t.status === "in_progress")) {
+      const first = tasks.findIndex((t) => t.status === "pending");
+      tasks = tasks.map((t, i) => (i === first ? { ...t, status: "in_progress" } : t));
+    }
+  }
+  if (ops.next === true || ops.skip === true) {
     const at = tasks.findIndex((t) => t.status === "in_progress");
     const upTo = at === -1 ? tasks.findIndex((t) => t.status !== "completed") : at;
+    const closed = ops.skip === true ? { status: "completed", isSkipped: true } : { status: "completed" };
     tasks = tasks.map((t, i) =>
-      i === upTo ? { ...t, status: "completed" } : i === upTo + 1 && t.status === "pending" ? { ...t, status: "in_progress" } : t,
+      i === upTo ? { ...t, ...closed } : i === upTo + 1 && t.status === "pending" ? { ...t, status: "in_progress" } : t,
     );
     failedCommand = null;
   }
@@ -469,7 +566,7 @@ function applyOps(track, ops) {
   }
   if (typeof ops.failed === "string") failedCommand = ops.failed || "failed";
   if (ops.fixed === true) failedCommand = null;
-  return { ...track, tasks, failedCommand };
+  return { ...track, tasks, failedCommand, failedReason: failedCommand === track.failedCommand ? track.failedReason : null };
 }
 
 // Exact name first, then a prefix, then a part of the name; -1 when none fits.
@@ -487,11 +584,40 @@ function isComplete(track) {
 }
 
 // Only a failing test, build, lint or typecheck turns a row red: grep, diff and
-// test -f exit 1 as an answer, not a failure.
-const CHECK = /\b(test|tests|spec|build|lint|check|typecheck|tsc|pytest|jest|vitest|mocha|cargo|go|make|gradle|mvn|eslint|ruff|mypy|rspec|phpunit|dotnet|swift|xcodebuild)\b/;
+// test -f exit 1 as an answer, not a failure. The command's head decides, not any word in it.
+const RUNNERS = /^(pytest|py\.test|tox|nox|jest|vitest|mocha|tsc|eslint|ruff|mypy|flake8|pylint|black|isort|pre-commit|rspec|phpunit|xcodebuild|gradle|gradlew|mvn|make|bazel|ctest)$/;
 
 export function isCheck(command) {
-  return command.split(/&&|\|\||;|\|/).some((part) => CHECK.test(part.replace(/^\s*(cd\s+\S+|\w+=\S+)\s*/, "")));
+  return command.split(/&&|\|\||;|\|/).some((part) => {
+    const words = part.trim().split(/\s+/).filter((w) => w && !w.startsWith("-"));
+    while (words.length > 0 && (/^\w+=/.test(words[0]) || words[0] === "cd" || words[0] === "time")) {
+      words.splice(0, words[0] === "cd" ? 2 : 1);
+    }
+    return isCheckWords(words);
+  });
+}
+
+function isCheckWords([first = "", ...rest]) {
+  const head = first.split("/").at(-1);
+  const [a = "", b = ""] = rest;
+  if (RUNNERS.test(head)) return true;
+  if (/^(npx|bunx|pnpx|uv|poetry|pipx)$/.test(head)) return isCheckWords(a === "run" || a === "exec" ? rest.slice(1) : rest);
+  if (/^python[\d.]*$/.test(head)) return isCheckWords(rest);
+  if (/^(npm|pnpm|yarn|bun)$/.test(head)) {
+    return /^(test|t|build|lint|typecheck|check)$/.test(a) || (a === "run" && /^(test|build|lint|typecheck|type-check|check)(:|$)/.test(b));
+  }
+  if (head === "cargo") return /^(test|build|check|clippy|nextest)$/.test(a);
+  if (head === "go") return /^(test|build|vet)$/.test(a);
+  if (head === "dotnet" || head === "swift") return /^(test|build)$/.test(a);
+  if (head === "claude") return a === "plugin" && /^(test|validate)$/.test(b);
+  return false;
+}
+
+// The first line of a failed check's output that names the problem.
+function errorLineOf(result) {
+  const text = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`;
+  const line = text.split("\n").find((l) => /\b(error|errors|failed|failure|FAIL|assert\w*)\b|✕/i.test(l));
+  return line ? line.trim() : null;
 }
 
 // A re-run with other flags or paths still counts as the same check.
@@ -526,7 +652,7 @@ function rowOf(track, columns) {
   const step = isDone ? total : Math.min(total, done + 1);
   const pill =
     status === "waiting"
-      ? "Waiting for approval"
+      ? track.isPlanning ? "Waiting for approval" : "Waiting for you"
       : status === "failed"
         ? `✕ ${shorten(current?.subject ?? "Failed", 18)} ${step}/${total}`
         : track.isPlanning
@@ -534,8 +660,9 @@ function rowOf(track, columns) {
           : isDone
             ? `✓ Done ${step}/${total}`
             : `${shorten(current?.subject ?? "Tasks", 18)} ${step}/${total}`;
+  const eta = status === "working" ? timeLeftOf(track.tasks) : "";
   const labelColumns = Math.max(12, Math.min(32, Math.floor(columns * 0.28)));
-  const width = columns - labelColumns - 2 - 2 - 4 - 7 - 2 - 1 - 2;
+  const width = columns - labelColumns - 2 - 2 - 4 - 7 - 2 - 1 - 2 - (eta ? eta.length + 1 : 0);
   const hasRoom = width >= Math.max(MIN_BAR_COLUMNS, pill.length + 6);
   return {
     id: track.id,
@@ -550,7 +677,8 @@ function rowOf(track, columns) {
     isExpanded: track.isExpanded === true,
     tasks: track.tasks,
     elapsed: track.startedAt ? durationOf((track.doneAt ?? Date.now()) - track.startedAt) : "",
-    reason: track.failedCommand ? shorten(track.failedCommand, 60) : null,
+    eta,
+    reason: track.failedCommand ? shorten(track.failedReason ?? track.failedCommand, 60) : null,
     bar: hasRoom ? { key: `bar:${track.id}`, width, done, total, status, pill } : null,
   };
 }
@@ -576,7 +704,7 @@ function draw({ Box, Text, Button, Raster }, row, onDismiss) {
       Box({ width: row.labelColumns, children: [Text({ wrap: "truncate-end", children: row.label })] }),
       Text({ children: "  " }),
       middle,
-      Text({ dimColor: true, children: `  ${String(row.percent).padStart(3)}%${row.elapsed ? ` ${row.elapsed.padStart(6)}` : ""}  ` }),
+      Text({ dimColor: true, children: `  ${String(row.percent).padStart(3)}%${row.elapsed ? ` ${row.elapsed.padStart(6)}` : ""}${row.eta ? ` ${row.eta}` : ""}  ` }),
       Button({ key: `dismiss:${row.id}`, label: "✕", plain: true, dimColor: true, onPress: onDismiss }),
     ],
   });
@@ -615,7 +743,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
           bar,
           Box({
             flexShrink: 0,
-            children: [Text({ dimColor: true, wrap: "truncate", children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}` })],
+            children: [Text({ dimColor: true, wrap: "truncate", children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}${r.eta ? ` · ${r.eta}` : ""}` })],
           }),
           isDone
             ? Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▾" : "▸", plain: true, dimColor: true, onPress: toggle(r.id) })
@@ -635,7 +763,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
               flexDirection: "row",
               gap: 1,
               children: [
-                Text({ color: DOT.done, children: "  ✓" }),
+                Text({ color: DOT.done, dimColor: t.isSkipped === true, children: t.isSkipped ? "  –" : "  ✓" }),
                 Text({ wrap: "truncate", children: t.subject }),
                 Box({ flexGrow: 1 }),
                 Text({ dimColor: true, children: t.tokens ? `${tokensOf(t.tokens)} tokens` : "—" }),
@@ -692,6 +820,15 @@ function base64Of(bytes) {
     out += i + 2 < bytes.length ? ALPHABET[n & 63] : "=";
   }
   return out;
+}
+
+// "~3m left": the mean time of the timed, finished tasks times the tasks left; blank under two.
+export function timeLeftOf(tasks) {
+  const timed = tasks.filter((t) => t.status === "completed" && !t.isSkipped && t.startedAt != null && t.doneAt != null);
+  const left = tasks.filter((t) => t.status !== "completed").length;
+  if (timed.length < 2 || left === 0) return "";
+  const mean = timed.reduce((sum, t) => sum + (t.doneAt - t.startedAt), 0) / timed.length;
+  return `~${durationOf(mean * left).split(" ")[0]} left`;
 }
 
 // 45s, 2m 14s, 1h 05m.
