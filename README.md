@@ -2,6 +2,8 @@
 
 progress-tracker is a Claude Code mod that draws a live progress bar for Claude's work in the band above the prompt. It works in the terminal and in the desktop Code tab, and it tracks task lists, plans, and plain tool calls.
 
+![The progress bar runs a 7-step demo: three parallel reads, a sub-agent, a failed test that recovers, and a green finish that opens the animated task timeline.](docs/demo.gif)
+
 ## Install the mod
 
 Mods are an early-access Claude Code feature. You need Claude Code 2.1.287 or later, with function hooks switched on for your account.
