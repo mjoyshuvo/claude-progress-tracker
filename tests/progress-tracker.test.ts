@@ -193,6 +193,27 @@ describe("progress-tracker", () => {
     expect(text).toContain("Build");
     expect(text).toContain("1.5k tokens");
   });
+  test("a step's tokens go to the task it started on, even when that task finishes mid-step", async ($, on) => {
+    world(on);
+    const usage = { input_tokens: 2000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: "m" };
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    on("turn.step", async function* (_$: any, e: any) {
+      await $.tool.call({ tool: TOOL, next: true } as any);
+      await $.tool.call({ tool: TOOL, next: true } as any);
+      return { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: "end_turn", usage };
+    });
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Alpha", "Beta"] } as any);
+    const step = $.turn.step({ turnId: "t", index: 0, model: "m", messageCount: 1 } as any);
+    for await (const _ of step);
+    await step.result;
+
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await $.ui.press({ plugin: "progress-tracker", key } as any);
+    const lines = textOf(await $.ui.render(DESK)).split("\n");
+    expect(lines.find((l) => l.includes("Alpha"))).toContain("2.0k tokens");
+  });
   test("on desktop an SVG draws the bar, moving only while working", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
@@ -301,6 +322,22 @@ describe("progress-tracker", () => {
     expect(lines[0]).toContain("Planning: ✓ Done");
   });
 
+  test("leaving plan mode without a plan drops the Planning bar, an answered plan keeps it", async ($, on) => {
+    world(on);
+    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Planning");
+    await $.classic.UserPromptSubmit({ prompt: "never mind, just do it", permission_mode: "default" } as any);
+    expect(textOf(await $.ui.render(DESK))).not.toContain("Planning");
+
+    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
+    await $.classic.UserPromptSubmit({ prompt: "go", permission_mode: "default" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Planning: ✓ Done");
+  });
+
   test("in plan mode each tool call becomes a step, until Claude sends its own list", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
@@ -329,6 +366,24 @@ describe("progress-tracker", () => {
     expect(added.result).toBe('0/3, running, active "One", next "Two"');
     const skipped: any = await $.tool.call({ tool: TOOL, skip: true } as any);
     expect(skipped.result).toBe('1/3, running, active "Two", next "Three"');
+    const [svg] = svgsOf(await $.ui.render({ ...BAND, surface: "desktop" } as any));
+    expect(svg.source.match(/class="skip"/g)).toHaveLength(1);
+  });
+
+  test("the active bar counts running subagents of the main loop", async ($, on) => {
+    world(on);
+    on("agent.list", () => ({
+      value: [
+        { id: "a1", description: "x", type: "Explore", status: "running" },
+        { id: "a2", description: "y", type: "Explore", status: "running" },
+        { id: "a3", description: "z", type: "Explore", status: "completed" },
+        { id: "a4", description: "w", type: "Explore", status: "running", parentId: "a1" },
+      ],
+    }));
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Search", "Fix"] } as any);
+    expect(textOf(await $.ui.render({ ...BAND, surface: "desktop" } as any))).toContain("Search 1/2 · 2 agents");
   });
 
   test("a question to the person turns the bar amber until it is answered", async ($, on) => {

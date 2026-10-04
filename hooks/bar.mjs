@@ -90,7 +90,7 @@ function capsuleCov(x, y, w, x0, x1, rx) {
 // Braille dot bits: [dotRow][dotCol]
 const BR = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
 
-export function barCells({ width, done, total, status, pill, t }) {
+export function barCells({ width, done, total, status, pill, t, skipped = [] }) {
   const W = width;
   const P = PAL[status] || PAL.working;
   const text = Array.from(String(pill ?? "")).slice(0, Math.max(1, W - 4));
@@ -132,6 +132,8 @@ export function barCells({ width, done, total, status, pill, t }) {
           cell = [r === 0 ? TICK_TOP : TICK_BOT, x < pillX ? P.tickFill : P.tickEmpty, trackCol];
         } else if (solidTrack && x < pillX) {
           cell = dotCell(x, r, pillX, span, shimmerPos, breathe, t, P);
+          // A skipped task's slice: its dots fade toward the fill.
+          if (skipped.includes(Math.floor((x / W) * total))) cell = [cell[0], mix(cell[1], P.fill, 0.65), cell[2]];
         } else {
           cell = shapeCell(ct, cp, pc, trackCol);
         }

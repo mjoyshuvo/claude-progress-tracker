@@ -32,6 +32,10 @@ const TRACKS = { plugin: "progress-tracker", key: "tracks" };
 // Parallel tool calls each read-modify-write the tracks; run them one by one.
 let queue = Promise.resolve();
 
+// The task in progress after the last write. A step reads it as it starts: reading
+// $.state there would pin a copy that its own write later puts back over newer tasks.
+let workingTask = null;
+
 // The mod's own tool, for sessions without TaskCreate / TodoWrite (the desktop app).
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
@@ -133,19 +137,17 @@ export function register(on) {
   });
 
   on("agent.spawn", async ($, e, next) => {
-    if (e.permissionMode === "plan" && !e.parentAgentId) await startPlanning($);
+    if (!e.parentAgentId) await followMode($, e.permissionMode);
     return next(e);
   });
 
   on("classic.UserPromptSubmit", async ($, e, next) => {
-    if (e.permission_mode === "plan") await startPlanning($);
+    await followMode($, e.permission_mode);
     return next(e);
   });
 
   on("classic.PreToolUse", async ($, e, next) => {
-    if (e.permission_mode === "plan" && !e.agent_id) {
-      await startPlanning($);
-    }
+    if (!e.agent_id) await followMode($, e.permission_mode);
     return next(e);
   });
 
@@ -260,18 +262,20 @@ export function register(on) {
     return r;
   });
 
-  // Each main-loop model call's tokens go to the task in progress, for the expanded list.
+  // Each main-loop model call's tokens go to the task in progress when the call
+  // started: tool calls run while the response streams, so by the end it may have moved on.
   on("turn.step", async function* ($, e, next) {
+    const before = e.agentId ? null : workingTask;
     const r = yield* next(e);
     const u = r?.usage;
     if (e.agentId || !u) return r;
     const tokens = u.input_tokens + u.output_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
     await update($, (tracks) => {
-      const active = activeOf(tracks);
-      const at = active?.tasks.findIndex((t) => t.status === "in_progress") ?? -1;
-      if (at === -1) return tracks;
-      const tasks = active.tasks.map((t, i) => (i === at ? { ...t, tokens: (t.tokens ?? 0) + tokens } : t));
-      return replace(tracks, { ...active, tasks });
+      const { trackId, taskId } = before ?? inProgressOf(tracks) ?? {};
+      const track = tracks.find((t) => t.id === trackId);
+      if (!track) return tracks;
+      const tasks = track.tasks.map((t) => (t.id === taskId ? { ...t, tokens: (t.tokens ?? 0) + tokens } : t));
+      return replace(tracks, { ...track, tasks });
     });
     return r;
   });
@@ -282,7 +286,10 @@ export function register(on) {
       return next(e);
     }
     const { value: tracks = [] } = await $.state.get(TRACKS);
-    const shown = tracks.filter((t) => !t.isDismissed && t.tasks.length > 0);
+    const agents = await runningAgentsOf($);
+    const shown = tracks
+      .filter((t) => !t.isDismissed && t.tasks.length > 0)
+      .map((t, i, all) => (i === all.length - 1 ? { ...t, agents } : t));
     const ui = $.ui.resolve(e);
     const dismiss = (id) => () =>
       void update($, (all) => all.map((t) => (t.id === id ? { ...t, isDismissed: true } : t)));
@@ -320,6 +327,7 @@ function update($, change) {
       if (changed === tracks) return;
       changed = changed.map((t) => stampDone($, stampTasks(t)));
       await $.state.set(TRACKS, changed);
+      workingTask = inProgressOf(changed);
     })
     .catch(() => undefined);
   return queue;
@@ -375,6 +383,12 @@ function newTrack(tracks, label) {
 
 function activeOf(tracks) {
   return tracks.findLast((t) => !t.isDismissed);
+}
+
+function inProgressOf(tracks) {
+  const active = activeOf(tracks);
+  const task = active?.tasks.find((t) => t.status === "in_progress");
+  return task ? { trackId: active.id, taskId: task.id } : null;
 }
 
 function replace(tracks, track) {
@@ -461,6 +475,13 @@ async function countWork($) {
 
 // Tools that are bookkeeping, not work: they never become a planning step.
 const NOT_A_STEP = new Set([TOOL, "ExitPlanMode", "AskUserQuestion", "ToolSearch", "TaskCreate", "TaskUpdate", "TodoWrite"]);
+
+// In plan mode a Planning bar starts. Out of it, a Planning bar that never reached
+// ExitPlanMode (the person left plan mode by hand) is dropped.
+async function followMode($, mode) {
+  if (mode === "plan") return startPlanning($);
+  if (mode) await update($, (tracks) => (tracks.some((t) => t.isPlanning) ? tracks.filter((t) => !t.isPlanning) : tracks));
+}
 
 async function startPlanning($) {
   await update($, (tracks) => {
@@ -642,6 +663,20 @@ function planTitleOf(plan) {
 
 // ---- drawing ----
 
+// Subagents the main loop started that are still running; 0 where the engine cannot list them.
+async function runningAgentsOf($) {
+  try {
+    const agents = await $.agent.list();
+    return agents.filter((a) => a.status === "running" && !a.parentId).length;
+  } catch {
+    return 0;
+  }
+}
+
+function agentsOf(count = 0) {
+  return count === 0 ? "" : ` · ${count} agent${count === 1 ? "" : "s"}`;
+}
+
 function rowOf(track, columns) {
   const total = track.tasks.length;
   const done = track.tasks.filter((t) => t.status === "completed").length;
@@ -659,8 +694,9 @@ function rowOf(track, columns) {
           ? `${current?.subject ?? "Planning"} ${step}/${total}`
           : isDone
             ? `✓ Done ${step}/${total}`
-            : `${shorten(current?.subject ?? "Tasks", 18)} ${step}/${total}`;
+            : `${shorten(current?.subject ?? "Tasks", 18)} ${step}/${total}${agentsOf(track.agents)}`;
   const eta = status === "working" ? timeLeftOf(track.tasks) : "";
+  const skipped = track.tasks.flatMap((t, i) => (t.isSkipped ? [i] : []));
   const labelColumns = Math.max(12, Math.min(32, Math.floor(columns * 0.28)));
   const width = columns - labelColumns - 2 - 2 - 4 - 7 - 2 - 1 - 2 - (eta ? eta.length + 1 : 0);
   const hasRoom = width >= Math.max(MIN_BAR_COLUMNS, pill.length + 6);
@@ -679,7 +715,8 @@ function rowOf(track, columns) {
     elapsed: track.startedAt ? durationOf((track.doneAt ?? Date.now()) - track.startedAt) : "",
     eta,
     reason: track.failedCommand ? shorten(track.failedReason ?? track.failedCommand, 60) : null,
-    bar: hasRoom ? { key: `bar:${track.id}`, width, done, total, status, pill } : null,
+    skipped,
+    bar: hasRoom ? { key: `bar:${track.id}`, width, done, total, status, pill, skipped } : null,
   };
 }
 
@@ -724,7 +761,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
       const isMoving = (props.isWorking || r.isDemo) && isLive(r.status);
       const bar = Svg
         ? Svg({
-            source: barSvg({ width, done: r.done, total: r.total, status: r.status, pill: r.pill, isMoving }),
+            source: barSvg({ width, done: r.done, total: r.total, status: r.status, pill: r.pill, isMoving, skipped: r.skipped }),
             alt: `${r.label}: ${r.pill}, ${r.percent}%${r.reason ? ` (${r.reason})` : ""}`,
             width,
             height: SVG_HEIGHT,

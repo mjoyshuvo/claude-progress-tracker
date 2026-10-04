@@ -22,7 +22,7 @@ const PALETTE = {
 const EMPTY_TICK = "#55545e";
 const BAND_DARK = "#212121";
 
-export function barSvg({ width, done, total, status, pill, isMoving }) {
+export function barSvg({ width, done, total, status, pill, isMoving, skipped = [] }) {
   const p = PALETTE[status];
   const h = SVG_HEIGHT;
   const r = h / 2;
@@ -49,6 +49,12 @@ export function barSvg({ width, done, total, status, pill, isMoving }) {
       `<rect x="${-band}" width="${band}" height="${h}" fill="url(#shine)">`,
       `<animate attributeName="x" from="${-band}" to="${fillEnd}" dur="1.1s" repeatCount="indefinite"/></rect>`,
     );
+  }
+  // A skipped task's slice is veiled in the track colour, so its dots read dimmer.
+  for (const i of skipped) {
+    const x0 = Math.round((i / total) * width);
+    const x1 = Math.round(((i + 1) / total) * width);
+    parts.push(`<rect class="skip" x="${x0}" width="${x1 - x0}" height="${h}" fill="${p.track}" fill-opacity=".65"/>`);
   }
   parts.push(`</g>`);
   for (let k = 1; k < total; k++) {

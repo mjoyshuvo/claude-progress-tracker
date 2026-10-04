@@ -37,12 +37,13 @@ The desktop app loads the mod from `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block 
 
 ## Plan mode
 
-In plan mode a "Planning" bar appears. If Claude sends its own planning steps with `progress_tracker`, the bar shows them. Until then, each tool call becomes a finished step named after it ("Find plugin files", "Read source.mjs"), so the bar moves as Claude works. The bar turns amber ("Waiting for approval") while Claude asks you to approve. Approved or rejected, the planning bar turns green; an approved plan gets a bar of its own with the plan's title and its numbered (or bulleted) steps, and Claude's first task list replaces those steps.
+In plan mode a "Planning" bar appears. If Claude sends its own planning steps with `progress_tracker`, the bar shows them. Until then, each tool call becomes a finished step named after it ("Find plugin files", "Read source.mjs"), so the bar moves as Claude works. The bar turns amber ("Waiting for approval") while Claude asks you to approve. If you leave plan mode without a plan, the planning bar goes away. Approved or rejected, the planning bar turns green; an approved plan gets a bar of its own with the plan's title and its numbered (or bulleted) steps, and Claude's first task list replaces those steps.
 
 ## Smarter tracking
 
 - Time left: after two tasks finish, the row shows `~3m left` (the mean task time times the tasks left).
-- `add: ["…"]` appends work found mid-run; `skip: true` closes the current task as not needed.
+- `add: ["…"]` appends work found mid-run; `skip: true` closes the current task as not needed. A skipped task's part of the bar is drawn dimmer.
+- While subagents run, the pill shows how many (`Search 1/3 · 2 agents`).
 - A question to you (`AskUserQuestion`) turns the bar amber ("Waiting for you") until you answer.
 - A failing check shows its first error line, not the command. Only real check commands count, by their head (`pytest`, `npm test`, `cargo build`, `.venv/bin/pytest` …); `go run`, `npm run dev` and `test -f` do not.
 - If Claude does 12 tool calls without moving the bar, it gets one quiet note to update it.
