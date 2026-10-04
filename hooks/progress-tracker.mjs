@@ -6,6 +6,7 @@
 
 import { barCells, ROWS as BAR_ROWS } from "./bar.mjs";
 import { barSvg, SVG_HEIGHT } from "./bar-svg.mjs";
+import { timelineSvg, ROW_HEIGHT, GUTTER_WIDTH } from "./timeline-svg.mjs";
 
 const MAX_ROWS = 3;
 const MIN_BAR_COLUMNS = 16;
@@ -32,9 +33,12 @@ const TRACKS = { plugin: "progress-tracker", key: "tracks" };
 // Parallel tool calls each read-modify-write the tracks; run them one by one.
 let queue = Promise.resolve();
 
-// The task in progress after the last write. A step reads it as it starts: reading
-// $.state there would pin a copy that its own write later puts back over newer tasks.
-let workingTask = null;
+// Outside plan mode a turn's first tool calls wait here; the AUTO_BAR_CALLS-th starts
+// a "Working" bar from them when Claude has no bar running. Reset on each turn.
+const AUTO_BAR_CALLS = 3;
+let turnSteps = [];
+let hasTurnBar = false;
+let lastMode = null;
 
 // The mod's own tool, for sessions without TaskCreate / TodoWrite (the desktop app).
 const TOOL_NAME = "progress_tracker";
@@ -74,7 +78,7 @@ export function register(on) {
 
   on("command.run", { command: "progress-tracker-demo" }, async ($) => {
     await playDemo($);
-    return { text: "Playing a progress-tracker demo above the prompt (about 15 seconds)." };
+    return { text: "Playing a progress-tracker demo above the prompt (about 25 seconds)." };
   });
 
   on("prompt.compose", async ($, e, next) => {
@@ -132,9 +136,18 @@ export function register(on) {
   // becomes a done step, so the bar moves. The plan_mode note on every plan-mode
   // turn is the surest sign.
   on("prompt.attachment", { type: "plan_mode" }, async ($, e, next) => {
-    await startPlanning($);
+    await followMode($, "plan");
     return next(e);
   });
+
+  // A reload asks again for every note in the transcript, old ones included, in order.
+  // The exit note that followed an old plan_mode note drops the bar that note just started.
+  for (const type of ["plan_mode_exit", "auto_mode"]) {
+    on("prompt.attachment", { type }, async ($, e, next) => {
+      await followMode($, type === "auto_mode" ? "auto" : "default");
+      return next(e);
+    });
+  }
 
   on("agent.spawn", async ($, e, next) => {
     if (!e.parentAgentId) await followMode($, e.permissionMode);
@@ -152,11 +165,32 @@ export function register(on) {
   });
 
   on("tool.call", async ($, e, next) => {
+    const startedAt = Date.now();
     const r = await next(e);
     if (e.agentId || NOT_A_STEP.has(e.tool)) return r;
-    await onPlanning($, (t) => (t.isAutoSteps && !t.isWaiting ? autoStep(t, e) : t));
+    const step = stepOf(e, startedAt);
+    await onPlanning($, (t) => (t.isAutoSteps && !t.isWaiting ? autoStep(t, step) : t));
+    await autoWork($, step);
+    if (step.agent) await noteAgentRun($, step);
     const nudge = await countWork($);
     return nudge && r.deny === undefined ? { ...r, context: [...(r.context ?? []), nudge] } : r;
+  });
+
+  on("turn.start", async ($, e, next) => {
+    if (!e.agentId) {
+      turnSteps = [];
+      hasTurnBar = false;
+    }
+    return next(e);
+  });
+
+  // The turn's "Working" bar ends with the turn and turns green; its open step becomes
+  // "Write reply", timed from the last tool call to the end of the turn.
+  on("turn.complete", async ($, e, next) => {
+    if (!e.agentId) {
+      await update($, (tracks) => tracks.map((t) => (t.isWorkBar && t.isAutoSteps ? closeWorkBar(t) : t)));
+    }
+    return next(e);
   });
 
   // Asking for approval turns the bar amber until the person answers. Either answer
@@ -262,24 +296,6 @@ export function register(on) {
     return r;
   });
 
-  // Each main-loop model call's tokens go to the task in progress when the call
-  // started: tool calls run while the response streams, so by the end it may have moved on.
-  on("turn.step", async function* ($, e, next) {
-    const before = e.agentId ? null : workingTask;
-    const r = yield* next(e);
-    const u = r?.usage;
-    if (e.agentId || !u) return r;
-    const tokens = u.input_tokens + u.output_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
-    await update($, (tracks) => {
-      const { trackId, taskId } = before ?? inProgressOf(tracks) ?? {};
-      const track = tracks.find((t) => t.id === trackId);
-      if (!track) return tracks;
-      const tasks = track.tasks.map((t) => (t.id === taskId ? { ...t, tokens: (t.tokens ?? 0) + tokens } : t));
-      return replace(tracks, { ...track, tasks });
-    });
-    return r;
-  });
-
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey) {
       animate($, null, []);
@@ -289,7 +305,7 @@ export function register(on) {
     const agents = await runningAgentsOf($);
     const shown = tracks
       .filter((t) => !t.isDismissed && t.tasks.length > 0)
-      .map((t, i, all) => (i === all.length - 1 ? { ...t, agents } : t));
+      .map((t, i, all) => (i === all.length - 1 ? { ...t, agents: t.isDemo ? (t.demoAgents ?? 0) : agents } : t));
     const ui = $.ui.resolve(e);
     const dismiss = (id) => () =>
       void update($, (all) => all.map((t) => (t.id === id ? { ...t, isDismissed: true } : t)));
@@ -327,7 +343,6 @@ function update($, change) {
       if (changed === tracks) return;
       changed = changed.map((t) => stampDone($, stampTasks(t)));
       await $.state.set(TRACKS, changed);
-      workingTask = inProgressOf(changed);
     })
     .catch(() => undefined);
   return queue;
@@ -385,12 +400,6 @@ function activeOf(tracks) {
   return tracks.findLast((t) => !t.isDismissed);
 }
 
-function inProgressOf(tracks) {
-  const active = activeOf(tracks);
-  const task = active?.tasks.find((t) => t.status === "in_progress");
-  return task ? { trackId: active.id, taskId: task.id } : null;
-}
-
 function replace(tracks, track) {
   return tracks.map((t) => (t.id === track.id ? track : t));
 }
@@ -409,40 +418,66 @@ function withActive(tracks, change, incoming) {
   return [...tracks, change(newTrack(tracks, null))];
 }
 
-// /progress-tracker-demo: a scripted run on its own track. Five tasks fill one by one,
-// the third fails and recovers, the bar turns green, then the track goes away.
+// /progress-tracker-demo: a scripted run on its own track that shows every feature: three
+// reads in parallel, a sub-agent, a failing check that recovers, time left, and the
+// finished timeline opened on its own. The track goes away a while after it finishes.
+const DEMO_TASKS = ["Plan", "Read config.ts", "Read api.ts", "Read db.ts", "Build", "Test", "Ship"];
 const DEMO_STEPS = [
-  [1400, { next: true }],
-  [1400, { next: true }],
-  [1200, { failed: "2 tests failing" }],
-  [2200, { fixed: true }],
-  [900, { next: true }],
-  [1400, { next: true }],
-  [1400, { next: true }],
+  [1400, (t) => applyOps(t, { next: true })],
+  [1600, demoParallelReads],
+  [700, (t) => ({ ...t, demoAgents: 1 })],
+  [1600, demoAgentDone],
+  [600, (t) => applyOps(t, { next: true })],
+  [1200, (t) => applyOps(t, { failed: "2 tests failing" })],
+  [2200, (t) => applyOps(t, { fixed: true })],
+  [900, (t) => applyOps(t, { next: true })],
+  [1400, (t) => ({ ...applyOps(t, { next: true }), isExpanded: true })],
 ];
-const DEMO_LINGER_MS = 3500;
+const DEMO_LINGER_MS = 12000;
 
 async function playDemo($) {
   let id = null;
   await update($, (tracks) => {
     const track = newTrack(tracks, "Demo: ship a feature");
     id = track.id;
-    const tokens = [8400, 42100, 23800, 11600, 3900];
-    const tasks = ["Plan", "Build", "Test", "Review", "Ship"].map((subject, i) => ({
+    const tasks = DEMO_TASKS.map((subject, i) => ({
       id: `demo${i + 1}`,
       subject,
       status: i === 0 ? "in_progress" : "pending",
-      tokens: tokens[i],
     }));
     return [...tracks, { ...track, tasks, isDemo: true }];
   });
   const onDemo = (change) => update($, (tracks) => tracks.map((t) => (t.id === id ? change(t) : t)));
   let at = 0;
-  for (const [delay, ops] of DEMO_STEPS) {
+  for (const [delay, change] of DEMO_STEPS) {
     at += delay;
-    $.clock.after(at, () => void onDemo((t) => applyOps(t, ops)));
+    $.clock.after(at, () => void onDemo(change));
   }
-  $.clock.after(at + DEMO_LINGER_MS, () => void update($, (tracks) => tracks.filter((t) => t.id !== id || t.isExpanded)));
+  $.clock.after(at + DEMO_LINGER_MS, () => void update($, (tracks) => tracks.filter((t) => t.id !== id)));
+}
+
+// The three reads all start when Plan finishes and end at different times.
+function demoParallelReads(track) {
+  const now = Date.now();
+  const start = track.tasks[0].doneAt ?? now - 1600;
+  const lengths = [900, 1300, 1600];
+  const tasks = track.tasks.map((task, i) => {
+    if (i >= 1 && i <= 3) return { ...task, status: "completed", startedAt: start, doneAt: start + lengths[i - 1] };
+    return i === 4 ? { ...task, status: "in_progress", startedAt: start + Math.max(...lengths) } : task;
+  });
+  return { ...track, tasks };
+}
+
+function demoAgentDone(track) {
+  const now = Date.now();
+  const run = {
+    taskId: "demo5",
+    subject: "Map the routes",
+    agent: { type: "Explore", isBackground: false },
+    startedAt: now - 1600,
+    doneAt: now,
+  };
+  return { ...track, demoAgents: 0, agentRuns: [...(track.agentRuns ?? []), run] };
 }
 
 // Done and waiting-for-approval bars hold still; the rest move while Claude works.
@@ -479,6 +514,7 @@ const NOT_A_STEP = new Set([TOOL, "ExitPlanMode", "AskUserQuestion", "ToolSearch
 // In plan mode a Planning bar starts. Out of it, a Planning bar that never reached
 // ExitPlanMode (the person left plan mode by hand) is dropped.
 async function followMode($, mode) {
+  if (mode) lastMode = mode;
   if (mode === "plan") return startPlanning($);
   if (mode) await update($, (tracks) => (tracks.some((t) => t.isPlanning) ? tracks.filter((t) => !t.isPlanning) : tracks));
 }
@@ -495,13 +531,61 @@ async function startPlanning($) {
 }
 
 // The step in progress is done and named after the call; a new one starts before Approval.
-function autoStep(track, call) {
+function autoStep(track, step) {
   const at = track.tasks.findIndex((t) => t.status === "in_progress");
   if (at === -1) return track;
-  const isWrite = call.tool === "Write" || call.tool === "Edit";
-  const done = { ...track.tasks[at], subject: stepNameOf(call), status: "completed" };
-  const following = { id: `plan${at + 2}`, subject: isWrite ? "Write plan" : "Explore", status: "in_progress" };
+  const done = { ...track.tasks[at], ...taskOf(step), status: "completed" };
+  const subject = track.isWorkBar ? "Working" : step.isWrite ? "Write plan" : "Explore";
+  const following = { id: `plan${at + 2}`, subject, status: "in_progress" };
   return { ...track, tasks: [...track.tasks.slice(0, at), done, following, ...track.tasks.slice(at + 1)] };
+}
+
+function closeWorkBar(track) {
+  const steps = track.tasks.filter((task) => task.status === "completed");
+  const open = track.tasks.find((task) => task.status === "in_progress");
+  const lastEnd = Math.max(0, ...steps.map((task) => task.doneAt ?? 0));
+  const reply = open
+    ? [{ ...open, subject: "Write reply", status: "completed", startedAt: lastEnd || open.startedAt, doneAt: Date.now() }]
+    : [];
+  return { ...track, tasks: [...steps, ...reply], isAutoSteps: false };
+}
+
+// One finished tool call, timed by the hook that ran it.
+function stepOf(call, startedAt) {
+  const agent =
+    call.tool === "Agent"
+      ? { type: String(call.subagent_type ?? "general-purpose"), isBackground: call.run_in_background === true }
+      : undefined;
+  return { subject: stepNameOf(call), startedAt, doneAt: Date.now(), isWrite: call.tool === "Write" || call.tool === "Edit", agent };
+}
+
+function taskOf(step) {
+  return { subject: step.subject, startedAt: step.startedAt, doneAt: step.doneAt, agent: step.agent };
+}
+
+// A sub-agent run during one of Claude's own tasks is listed under that task.
+async function noteAgentRun($, step) {
+  await update($, (tracks) => {
+    const active = activeOf(tracks);
+    const task = active?.tasks.find((t) => t.status === "in_progress");
+    if (!task || active.isAutoSteps) return tracks;
+    const run = { taskId: task.id, ...taskOf(step) };
+    return replace(tracks, { ...active, agentRuns: [...(active.agentRuns ?? []), run] });
+  });
+}
+
+async function autoWork($, step) {
+  if (lastMode === "plan") return;
+  turnSteps.push(step);
+  await update($, (tracks) => {
+    const active = activeOf(tracks);
+    if (active?.isWorkBar && active.isAutoSteps) return replace(tracks, autoStep(active, step));
+    if (hasTurnBar || turnSteps.length < AUTO_BAR_CALLS || (active && !isComplete(active))) return tracks;
+    hasTurnBar = true;
+    const done = turnSteps.map((s, i) => ({ id: `plan${i + 1}`, ...taskOf(s), status: "completed" }));
+    const tasks = [...done, { id: `plan${done.length + 1}`, subject: "Working", status: "in_progress" }];
+    return [...tracks, { ...newTrack(tracks, "Working"), tasks, isWorkBar: true, isAutoSteps: true }];
+  });
 }
 
 export function stepNameOf(call) {
@@ -712,6 +796,7 @@ function rowOf(track, columns) {
     isDemo: track.isDemo === true,
     isExpanded: track.isExpanded === true,
     tasks: track.tasks,
+    track,
     elapsed: track.startedAt ? durationOf((track.doneAt ?? Date.now()) - track.startedAt) : "",
     eta,
     reason: track.failedCommand ? shorten(track.failedReason ?? track.failedCommand, 60) : null,
@@ -783,7 +868,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
             children: [Text({ dimColor: true, wrap: "truncate", children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}${r.eta ? ` · ${r.eta}` : ""}` })],
           }),
           isDone
-            ? Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▾" : "▸", plain: true, dimColor: true, onPress: toggle(r.id) })
+            ? Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▼ Tasks" : "▶ Tasks", plain: true, onPress: toggle(r.id) })
             : null,
           Button({ key: `dismiss:${r.id}`, label: "✕", plain: true, dimColor: true, onPress: dismiss(r.id) }),
         ].filter(Boolean),
@@ -794,17 +879,27 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
         flexDirection: "column",
         children: [
           line,
-          ...r.tasks.map((t, i) =>
+          ...timelineOf(r.track).map((entry, i, all) =>
             Box({
               key: `${r.id}:${i}`,
               flexDirection: "row",
+              alignItems: "center",
               gap: 1,
               children: [
-                Text({ color: DOT.done, dimColor: t.isSkipped === true, children: t.isSkipped ? "  –" : "  ✓" }),
-                Text({ wrap: "truncate", children: t.subject }),
+                Svg
+                  ? Svg({
+                      source: timelineSvg({ ...entry, isFirst: i === 0, isLast: i === all.length - 1, index: i, count: all.length }),
+                      alt: entry.isAgent ? "sub-agent" : entry.pos === "main" ? "step" : "parallel step",
+                      width: GUTTER_WIDTH,
+                      height: ROW_HEIGHT,
+                      isInteractive: true,
+                    })
+                  : Text({ color: entry.isAgent ? DOT.working : DOT.done, children: entry.pos === "main" ? " ●" : " ┆●" }),
+                Text({ wrap: "truncate", dimColor: entry.isSkipped, children: entry.subject }),
+                entry.note ? Text({ dimColor: true, wrap: "truncate", children: entry.note }) : null,
                 Box({ flexGrow: 1 }),
-                Text({ dimColor: true, children: t.tokens ? `${tokensOf(t.tokens)} tokens` : "—" }),
-              ],
+                Text({ dimColor: true, children: entry.time }),
+              ].filter(Boolean),
             }),
           ),
         ],
@@ -869,10 +964,55 @@ export function timeLeftOf(tasks) {
 }
 
 // 45s, 2m 14s, 1h 05m.
-function tokensOf(n) {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+// The finished list as timeline rows: each task, then the sub-agents it ran on a branch.
+// Steps whose run times overlap ran in parallel and share a branch too.
+function timelineOf(track) {
+  const rows = [];
+  for (const task of track.tasks) {
+    rows.push(entryOf(task));
+    for (const run of track.agentRuns ?? []) {
+      if (run.taskId === task.id) rows.push({ ...entryOf(run), isSubAgent: true });
+    }
+  }
+  let i = 0;
+  while (i < rows.length) {
+    let j = i;
+    if (rows[i].isSubAgent) {
+      while (rows[j + 1]?.isSubAgent) j++;
+    } else {
+      let end = rows[i].doneAt ?? 0;
+      while (rows[j + 1] && !rows[j + 1].isSubAgent && rows[j + 1].startedAt != null && rows[j + 1].startedAt < end) {
+        j++;
+        end = Math.max(end, rows[j].doneAt ?? 0);
+      }
+      if (j > i) rows[i].notes.push(`${j - i + 1} in parallel`);
+    }
+    if (j > i || rows[i].isSubAgent) {
+      for (let k = i; k <= j; k++) rows[k].pos = i === j ? "only" : k === i ? "start" : k === j ? "end" : "middle";
+    }
+    i = j + 1;
+  }
+  return rows.map((row) => ({ ...row, note: row.notes.length > 0 ? `· ${row.notes.join(" · ")}` : null }));
+}
+
+function entryOf(item) {
+  const agent = item.agent;
+  const isTimed = item.startedAt != null && item.doneAt != null;
+  return {
+    subject: item.subject,
+    startedAt: item.startedAt,
+    doneAt: item.doneAt,
+    pos: "main",
+    isAgent: agent !== undefined,
+    isSkipped: item.isSkipped === true,
+    notes: agent ? [`${agent.type} agent`] : [],
+    time: agent?.isBackground ? "background" : isTimed ? timeOf(item.doneAt - item.startedAt) : "—",
+  };
+}
+
+// Tenths of a second below a minute: most tool calls take well under one.
+function timeOf(ms) {
+  return ms < 60_000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : durationOf(ms);
 }
 
 function durationOf(ms) {

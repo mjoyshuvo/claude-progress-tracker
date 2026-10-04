@@ -171,48 +171,23 @@ describe("progress-tracker", () => {
     await $.ui.press({ plugin: "progress-tracker", key } as any);
     expect(textOf(await $.ui.render(BAND))).toBe("");
   });
-  test("a finished desktop bar expands to show each task's tokens", async ($, on) => {
+  test("a finished desktop bar expands to show how long each task took", async ($, on) => {
     world(on);
-    const usage = { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: "m" };
-    on("turn.step", async function* (_$: any, e: any) {
-      return { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: "end_turn", usage };
-    });
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     await tasks($, ["Build", "Ship"]);
     await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "in_progress" } as any);
-    const step = $.turn.step({ turnId: "t", index: 0, model: "m", messageCount: 1 } as any);
-    for await (const _ of step);
-    await step.result;
     await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
     await $.tool.call({ tool: "TaskUpdate", taskId: "2", status: "completed" } as any);
 
     const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
     await $.ui.press({ plugin: "progress-tracker", key } as any);
-    const text = textOf(await $.ui.render(DESK));
-    expect(text).toContain("Build");
-    expect(text).toContain("1.5k tokens");
-  });
-  test("a step's tokens go to the task it started on, even when that task finishes mid-step", async ($, on) => {
-    world(on);
-    const usage = { input_tokens: 2000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: "m" };
-    const TOOL = "mcp__progress-tracker__progress_tracker";
-    on("turn.step", async function* (_$: any, e: any) {
-      await $.tool.call({ tool: TOOL, next: true } as any);
-      await $.tool.call({ tool: TOOL, next: true } as any);
-      return { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: "end_turn", usage };
-    });
-    const DESK = { ...BAND, surface: "desktop" } as any;
-    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Alpha", "Beta"] } as any);
-    const step = $.turn.step({ turnId: "t", index: 0, model: "m", messageCount: 1 } as any);
-    for await (const _ of step);
-    await step.result;
-
-    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
-    await $.ui.press({ plugin: "progress-tracker", key } as any);
-    const lines = textOf(await $.ui.render(DESK)).split("\n");
-    expect(lines.find((l) => l.includes("Alpha"))).toContain("2.0k tokens");
+    const tree = await $.ui.render(DESK);
+    const lines = textOf(tree).split("\n").slice(1);
+    expect(lines.find((l) => l.includes("Build"))).toMatch(/\d+\.\ds$/);
+    expect(lines.find((l) => l.includes("Ship"))).toMatch(/—$/);
+    expect(textOf(tree)).not.toContain("tokens");
+    expect(svgsOf(tree).filter((svg: any) => svg.alt === "step")).toHaveLength(2);
   });
   test("on desktop an SVG draws the bar, moving only while working", async ($, on) => {
     world(on);
@@ -256,24 +231,31 @@ describe("progress-tracker", () => {
     const described: any = await $.tool.describe({ tool: "mcp__progress-tracker__progress_tracker", description: "d" } as any);
     expect(described.isDeferred).toBe(false);
   });
-  test("/progress-tracker-demo plays a run that fails, recovers, finishes and clears", async ($, on) => {
+  test("/progress-tracker-demo plays every feature, then opens its timeline and clears", async ($, on) => {
     const { clock } = world(on);
     on("ui.blit", () => ({ value: {} }));
     on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
 
     const { text } = await $.command.run({ command: "progress-tracker-demo", args: "", origin: { kind: "composer" } } as any);
     expect(text).toContain("demo");
     expect(textOf(await $.ui.render(BAND))).toContain("Demo: ship a feature");
-    expect(textOf(await $.ui.render(BAND))).toContain("Plan 1/5");
+    expect(textOf(await $.ui.render(BAND))).toContain("Plan 1/7");
 
-    await clock.advance(1400 + 1400 + 1200);
-    expect(textOf(await $.ui.render(BAND))).toContain("✕ Test 3/5");
+    await clock.advance(1400 + 1600 + 700);
+    expect(textOf(await $.ui.render(BAND))).toContain("Build 5/7 · 1 agent");
 
-    await clock.advance(2200 + 900 + 1400 + 1400);
-    expect(textOf(await $.ui.render(BAND))).toContain("✓ Done 5/5");
+    await clock.advance(1600 + 600 + 1200);
+    expect(textOf(await $.ui.render(BAND))).toContain("✕ Test 6/7");
 
-    await clock.advance(3500);
+    await clock.advance(2200 + 900 + 1400);
+    expect(textOf(await $.ui.render(BAND))).toContain("✓ Done 7/7");
+    const timeline = textOf(await $.ui.render(DESK));
+    expect(timeline).toContain("3 in parallel");
+    expect(timeline).toContain("Map the routes· Explore agent");
+
+    await clock.advance(12000);
     expect(textOf(await $.ui.render(BAND))).toBe("");
   });
   test("plan mode shows Planning, waits amber, finishes green, and the plan gets its own bar", async ($, on) => {
@@ -338,6 +320,19 @@ describe("progress-tracker", () => {
     expect(textOf(await $.ui.render(DESK))).toContain("Planning: ✓ Done");
   });
 
+  test("old plan-mode notes asked again after a reload leave no Planning bar", async ($, on) => {
+    world(on);
+    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("prompt.attachment", (_$: any, e: any) => ({ text: e.text }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    const origin = { kind: "engine" };
+    await $.prompt.attachment({ type: "plan_mode", text: "plan", origin } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Planning");
+    await $.prompt.attachment({ type: "plan_mode_exit", text: "exit", origin } as any);
+    expect(textOf(await $.ui.render(DESK))).toBe("");
+  });
+
   test("in plan mode each tool call becomes a step, until Claude sends its own list", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
@@ -355,6 +350,103 @@ describe("progress-tracker", () => {
     const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("Plan the fix: Read code 1/2");
+  });
+
+  test("outside plan mode the third tool call of a turn starts a Working bar that ends green with the turn", async ($, on) => {
+    world(on);
+    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
+    on("turn.complete", () => ({ text: "" }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.classic.UserPromptSubmit({ prompt: "check it", permission_mode: "auto" } as any);
+    await $.turn.start({ text: "check it", turnId: "t1" } as any);
+    await $.tool.call({ tool: "Bash", command: "ls", description: "List files" } as any);
+    await $.tool.call({ tool: "Read", file_path: "/a/b.md" } as any);
+    expect(textOf(await $.ui.render(DESK))).toBe("");
+
+    await $.tool.call({ tool: "Grep", pattern: "plugin" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Working: Working 4/4");
+    await $.tool.call({ tool: "Read", file_path: "/a/c.md" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Working 5/5");
+
+    await $.turn.complete({ turnId: "t1", reason: "answer", text: "", answer: "" } as any);
+    expect(textOf(await $.ui.render(DESK))).toContain("Working: ✓ Done 5/5");
+
+    await $.turn.start({ text: "quick one", turnId: "t2" } as any);
+    await $.tool.call({ tool: "Read", file_path: "/a/d.md" } as any);
+    expect(textOf(await $.ui.render(DESK)).split("\n").filter(Boolean)).toHaveLength(1);
+  });
+
+  test("a Working bar draws parallel steps on a branch and a sub-agent with its robot", async ($, on) => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    on("tool.call", { tool: "Read" }, async () => {
+      await sleep(30);
+      return { result: {} };
+    });
+    on("tool.call", { tool: "Agent" }, async () => {
+      await sleep(20);
+      return { result: {} };
+    });
+    world(on);
+    on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
+    on("turn.complete", () => ({ text: "" }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.turn.start({ text: "go", turnId: "t1" } as any);
+    await Promise.all(["a", "b", "c"].map((f) => $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any)));
+    await $.tool.call({ tool: "Agent", description: "Map the routes", subagent_type: "Explore", prompt: "x" } as any);
+    await $.turn.complete({ turnId: "t1", reason: "answer", text: "", answer: "" } as any);
+
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await $.ui.press({ plugin: "progress-tracker", key } as any);
+    const tree = await $.ui.render(DESK);
+    const lines = textOf(tree).split("\n");
+    expect(lines.find((l) => l.includes("Read a.md"))).toContain("3 in parallel");
+    expect(lines.find((l) => l.includes("Map the routes"))).toContain("Explore agent");
+    expect(lines.find((l) => l.includes("Write reply"))).toBeDefined();
+    const alts = svgsOf(tree).slice(1).map((svg: any) => svg.alt);
+    expect(alts).toEqual(["parallel step", "parallel step", "parallel step", "sub-agent", "step"]);
+  });
+
+  test("a sub-agent run during one of Claude's tasks is listed under it", async ($, on) => {
+    world(on);
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Survey", "Fix"] } as any);
+    await $.tool.call({ tool: "Agent", description: "Find callers", subagent_type: "Explore", run_in_background: true } as any);
+    await $.tool.call({ tool: TOOL, next: true } as any);
+    await $.tool.call({ tool: TOOL, next: true } as any);
+
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await $.ui.press({ plugin: "progress-tracker", key } as any);
+    const lines = textOf(await $.ui.render(DESK)).split("\n").slice(1);
+    expect(lines[0]).toContain("Survey");
+    expect(lines[1]).toContain("Find callers");
+    expect(lines[1]).toContain("Explore agent");
+    expect(lines[1]).toMatch(/background$/);
+    expect(lines[2]).toContain("Fix");
+  });
+
+  test("Claude's own list takes over the Working bar, and plan mode starts none", async ($, on) => {
+    world(on);
+    on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.turn.start({ text: "go", turnId: "t1" } as any);
+    for (const f of ["a", "b", "c"]) await $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any);
+    await $.tool.call({ tool: TOOL, title: "Fix it", tasks: ["Patch", "Test"] } as any);
+    let lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Fix it: Patch 1/2");
+
+    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await $.turn.start({ text: "plan", turnId: "t2" } as any);
+    for (const f of ["d", "e", "f"]) await $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any);
+    lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
+    expect(lines.some((l) => l.startsWith("Working"))).toBe(false);
   });
 
   test("add appends found work and skip closes the current task", async ($, on) => {

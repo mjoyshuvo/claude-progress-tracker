@@ -41,6 +41,7 @@ In plan mode a "Planning" bar appears. If Claude sends its own planning steps wi
 
 ## Smarter tracking
 
+- Outside plan mode, if a turn reaches 3 tool calls and Claude has no bar running, a "Working" bar starts. Each tool call becomes a step, and the bar turns green when the turn ends. Each step shows how long its tool call took, and Claude's closing reply becomes a "Write reply" step. If Claude sends its own list, the list replaces those steps.
 - Time left: after two tasks finish, the row shows `~3m left` (the mean task time times the tasks left).
 - `add: ["…"]` appends work found mid-run; `skip: true` closes the current task as not needed. A skipped task's part of the bar is drawn dimmer.
 - While subagents run, the pill shows how many (`Search 1/3 · 2 agents`).
@@ -50,9 +51,13 @@ In plan mode a "Planning" bar appears. If Claude sends its own planning steps wi
 
 Colours: purple = working, red = a step failed, amber = waiting for you, green = done.
 
+## Task timeline
+
+On the desktop, press `▶ Tasks` on a finished bar to see its timeline. A connected line joins the steps, and each row shows how long the step took. The timeline moves: the line draws itself in as the list opens, then a light pulse runs down it on a loop, splitting into parallel branches, and each dot rings as the pulse passes. Robot heads blink. Steps that ran at the same time branch off the line together and are marked `· 3 in parallel`. A sub-agent row has a robot icon and its type (`· Explore agent`). A sub-agent started during one of Claude's own tasks is listed under that task. A background sub-agent shows `background` instead of a time.
+
 ## Demo
 
-Type `/progress-tracker-demo` in a session with the mod loaded. A sample 5-step job fills one task at a time, fails at "Test" (red), recovers, finishes green, and clears itself after about 15 seconds. The demo bar animates even while Claude is idle.
+Type `/progress-tracker-demo` in a session with the mod loaded. A sample 7-step job runs three reads in parallel, runs a sub-agent (the pill shows `· 1 agent`), fails at "Test" (red), recovers and finishes green. Then its timeline opens on its own, and the bar clears itself about 12 seconds later. The demo bar animates even while Claude is idle.
 
 ## Run
 
