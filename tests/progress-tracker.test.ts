@@ -204,6 +204,13 @@ describe("progress-tracker", () => {
 
     [svg] = svgsOf(await $.ui.render({ ...DESK, props: { ...DESK.props, isWorking: false } }));
     expect(svg.source).not.toContain("<animate");
+
+    await $.tool.call({ tool: "TaskUpdate", taskId: "2", status: "completed" } as any);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "3", status: "completed" } as any);
+    [svg] = svgsOf(await $.ui.render({ ...DESK, props: { ...DESK.props, isWorking: false } }));
+    expect(svg.alt).toContain("✓ Done 3/3");
+    expect(svg.source).toContain("<animate");
+    expect(svg.source).not.toContain("#ffffff;");
   });
   test("the progress_tracker tool drives the bar where no task tools exist", async ($, on) => {
     world(on);

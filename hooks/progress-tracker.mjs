@@ -843,7 +843,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
     flexDirection: "column",
     gap: 1,
     children: rows.map((r) => {
-      const isMoving = (props.isWorking || r.isDemo) && isLive(r.status);
+      const isMoving = ((props.isWorking || r.isDemo) && isLive(r.status)) || r.status === "done";
       const bar = Svg
         ? Svg({
             source: barSvg({ width, done: r.done, total: r.total, status: r.status, pill: r.pill, isMoving, skipped: r.skipped }),

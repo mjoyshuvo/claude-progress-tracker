@@ -62,7 +62,7 @@ The colour of a row tells you its state:
 | Amber | Claude waits for you | `Waiting for you` or `Waiting for approval` |
 | Green | Every task is done | `✓ Done 5/5` |
 
-The bar moves while Claude works, on purple and red rows. It holds still when Claude is idle, waiting, or done. In the terminal, the mod draws the bar with block characters and repaints it about 15 times a second. In the desktop app, the bar is an SVG that animates itself.
+The bar moves while Claude works, on purple and red rows. It holds still while Claude waits for you. A finished green bar keeps a slow twinkle in the desktop app and holds still in the terminal. In the terminal, the mod draws the bar with block characters and repaints it about 15 times a second. In the desktop app, the bar is an SVG that animates itself.
 
 A finished row hides itself after a minute. New tasks after a finished list start a new row. At the next session start, the mod drops rows that are finished, hidden, or older than 12 hours.
 

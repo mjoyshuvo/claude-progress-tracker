@@ -89,11 +89,11 @@ function dots(p, fillEnd, h, status, isMoving) {
       const opacity = Math.min(1, (0.3 + ramp * 0.8) * (0.75 + 0.35 * hash(seed * 997)));
       const y = top + row * PITCH;
       const rect = `<rect x="${Math.round(x)}" y="${y}" width="${DOT}" height="${DOT}" rx=".4" fill="${p.dot}" fill-opacity="${opacity.toFixed(2)}"`;
-      if (!isMoving || status === "done") {
+      if (!isMoving) {
         out.push(`${rect}/>`);
         continue;
       }
-      const slow = status === "failed" ? 1.8 : 1;
+      const slow = status === "failed" ? 1.8 : status === "done" ? 2.2 : 1;
       const dur = ((0.35 + hash(seed * 13) * 0.55) * slow).toFixed(2);
       const begin = (-hash(seed * 29) * Number(dur)).toFixed(2);
       const dim = (opacity * 0.15).toFixed(2);
