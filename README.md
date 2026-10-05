@@ -175,3 +175,7 @@ node design/harness.mjs two-row-smooth
 | `tests/progress-tracker.test.ts` | The tests. |
 | `dev/simulate.mjs` | The stand-in run. |
 | `design/` | Bar design previews and variants. |
+
+## Why I built it
+
+I found a Claude Code mod that shows a progress bar above the prompt, [zycck/claude-mods](https://github.com/zycck/claude-mods), but I couldn't get it working on my machine. So I built my own version to learn how mods work.
