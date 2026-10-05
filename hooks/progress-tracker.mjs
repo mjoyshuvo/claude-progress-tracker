@@ -40,6 +40,10 @@ let turnSteps = [];
 let hasTurnBar = false;
 let lastMode = null;
 
+// The sub-agents the main loop started, by the Agent call that started each one.
+// The pill counts these alone; the timeline marks the call's step as a sub-agent.
+const spawned = new Map();
+
 // The mod's own tool, for sessions without TaskCreate / TodoWrite (the desktop app).
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
@@ -150,8 +154,13 @@ export function register(on) {
   }
 
   on("agent.spawn", async ($, e, next) => {
-    if (!e.parentAgentId) await followMode($, e.permissionMode);
-    return next(e);
+    if (e.parentAgentId) return next(e);
+    await followMode($, e.permissionMode);
+    const r = await next(e);
+    if (r.agentId) {
+      spawned.set(e.tool_use_id, { id: r.agentId, type: e.subagentType, isBackground: e.background === true });
+    }
+    return r;
   });
 
   on("classic.UserPromptSubmit", async ($, e, next) => {
@@ -552,10 +561,12 @@ function closeWorkBar(track) {
 
 // One finished tool call, timed by the hook that ran it.
 function stepOf(call, startedAt) {
-  const agent =
-    call.tool === "Agent"
+  const run =
+    spawned.get(call.tool_use_id) ??
+    (call.tool === "Agent"
       ? { type: String(call.subagent_type ?? "general-purpose"), isBackground: call.run_in_background === true }
-      : undefined;
+      : undefined);
+  const agent = run ? { type: run.type, isBackground: run.isBackground } : undefined;
   return { subject: stepNameOf(call), startedAt, doneAt: Date.now(), isWrite: call.tool === "Write" || call.tool === "Edit", agent };
 }
 
@@ -747,11 +758,13 @@ function planTitleOf(plan) {
 
 // ---- drawing ----
 
-// Subagents the main loop started that are still running; 0 where the engine cannot list them.
+// Sub-agents the main loop started that are still running; 0 where the engine cannot list them.
 async function runningAgentsOf($) {
+  if (spawned.size === 0) return 0;
   try {
+    const ours = new Set([...spawned.values()].map((run) => run.id));
     const agents = await $.agent.list();
-    return agents.filter((a) => a.status === "running" && !a.parentId).length;
+    return agents.filter((a) => a.status === "running" && ours.has(a.id)).length;
   } catch {
     return 0;
   }

@@ -469,20 +469,51 @@ describe("progress-tracker", () => {
     expect(svg.source.match(/class="skip"/g)).toHaveLength(1);
   });
 
-  test("the active bar counts running subagents of the main loop", async ($, on) => {
+  test("the pill counts only running sub-agents this conversation started", async ($, on) => {
     world(on);
+    on("agent.spawn", (_$: any, e: any) => ({ model: "m", agentId: `a${e.tool_use_id}` }));
     on("agent.list", () => ({
       value: [
         { id: "a1", description: "x", type: "Explore", status: "running" },
         { id: "a2", description: "y", type: "Explore", status: "running" },
         { id: "a3", description: "z", type: "Explore", status: "completed" },
-        { id: "a4", description: "w", type: "Explore", status: "running", parentId: "a1" },
+        { id: "a9", description: "w", type: "Explore", status: "running" },
       ],
     }));
     const TOOL = "mcp__progress-tracker__progress_tracker";
+    const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     await $.tool.call({ tool: TOOL, title: "Job", tasks: ["Search", "Fix"] } as any);
-    expect(textOf(await $.ui.render({ ...BAND, surface: "desktop" } as any))).toContain("Search 1/2 · 2 agents");
+    expect(textOf(await $.ui.render(DESK))).toContain("Search 1/2, ");
+
+    const spawn = (id: string) =>
+      $.agent.spawn({ tool_use_id: id, prompt: "p", description: "d", subagentType: "Explore", parentModel: "m", background: true } as any);
+    for (const id of ["1", "2", "3"]) await spawn(id);
+    expect(textOf(await $.ui.render(DESK))).toContain("Search 1/2 · 2 agents");
+  });
+
+  test("a tool call that starts a sub-agent is a sub-agent step, whatever the tool is called", async ($, on) => {
+    on("tool.call", { tool: "Task" }, async (_$: any, e: any) => {
+      await $.agent.spawn({ tool_use_id: e.tool_use_id, prompt: "p", description: e.description, subagentType: "Plan", parentModel: "m", background: false } as any);
+      return { result: {} };
+    });
+    world(on);
+    on("agent.spawn", (_$: any, e: any) => ({ model: "m", agentId: `a${e.tool_use_id}` }));
+    on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
+    on("turn.complete", () => ({ text: "" }));
+    const DESK = { ...BAND, surface: "desktop" } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.turn.start({ text: "go", turnId: "t1" } as any);
+    for (const f of ["a", "b"]) await $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any);
+    await $.tool.call({ tool: "Task", tool_use_id: "u1", description: "Draft the plan" } as any);
+    await $.tool.call({ tool: "Bash", command: "ls", description: "List files", tool_use_id: "u2" } as any);
+    await $.turn.complete({ turnId: "t1", reason: "answer", text: "", answer: "" } as any);
+
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await $.ui.press({ plugin: "progress-tracker", key } as any);
+    const lines = textOf(await $.ui.render(DESK)).split("\n");
+    expect(lines.find((l) => l.includes("Draft the plan"))).toContain("Plan agent");
+    expect(lines.find((l) => l.includes("List files"))).not.toContain("agent");
   });
 
   test("a question to the person turns the bar amber until it is answered", async ($, on) => {

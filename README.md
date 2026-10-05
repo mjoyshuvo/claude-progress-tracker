@@ -106,7 +106,7 @@ In plan mode, a row named "Planning" appears. Each tool call becomes a finished 
 - When Claude asks you a question with `AskUserQuestion`, the row turns amber until you answer.
 - When a check command fails during a task, the row turns red and shows the first error line of the output. A check is a test, build, lint, or typecheck command. The command's first words decide: `pytest`, `tsc`, `ruff`, `make`, `npm test`, `cargo build`, `go test`, and `.venv/bin/pytest` all count. Commands such as `grep`, `go run`, `npm run dev`, and `test -f` do not count, even when they exit with code 1.
 - The row turns back from red when the same check passes, with any flags, or when a task changes state.
-- While sub-agents run, the pill shows how many, for example `Search 1/3 · 2 agents`.
+- While sub-agents that Claude started in this conversation run, the pill shows how many, for example `Search 1/3 · 2 agents`. Agents from other places do not count.
 
 ## Read the task timeline
 
