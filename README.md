@@ -1,8 +1,22 @@
 # progress-tracker
 
-progress-tracker is a Claude Code mod that draws a live progress bar for Claude's work in the band above the prompt. It works in the terminal and in the desktop Code tab, and it tracks task lists, plans, and plain tool calls.
+progress-tracker is a Claude Code mod that shows what Claude is doing while it works. It draws a live progress bar in the band above the prompt, and it adds a Progress pane that lists what waits on you and what Claude found. It works in the terminal and in the desktop Code tab.
 
-![The progress bar runs a 7-step demo: three parallel reads, a sub-agent, a failed test that recovers, and a green finish that opens the animated task timeline.](docs/demo.gif)
+![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes green with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
+
+## Features
+
+- **Live bar.** Each task list gets a row with a moving bar. The pill names the current task and its step, for example `Write tests 3/5`.
+- **Real totals only.** A list that Claude declares shows `3/5` and a percent. Work without a list shows a step count, for example `Working · 12 steps`, because its total is not known.
+- **Early task list.** On the 3rd tool call of a turn with no list, the mod asks Claude for its task list, so most work gets a real total.
+- **Waits on you.** A question, a permission prompt, or a plan approval turns the row amber. A question or a permission prompt also shows a toast.
+- **Failing checks.** A failing test, build, lint, or typecheck turns the row red and shows the first error line. The pill counts repeated failures, for example `×3`.
+- **Measured numbers.** The row shows the time Claude worked, the time it waited on you, and the input and output tokens that the API reported. It does not guess the time left.
+- **Context warning.** From 80% full, the row shows the context fill.
+- **Progress pane.** `/progress` opens a pane with the numbers as labelled tiles and two tabs: **Blocked on me** and **Found**. Press an entry to open its details.
+- **Task timeline.** Each row expands to list its tasks with their times. On desktop, parallel steps and sub-agents appear on a branch.
+- **Sub-agent count.** While sub-agents that Claude started run, the pill shows how many.
+- **Plan mode.** Planning gets its own row, and an approved plan becomes a row with the plan's steps.
 
 ## Install the mod
 
@@ -21,7 +35,7 @@ Mods are an early-access Claude Code feature. You need Claude Code 2.1.287 or la
 	```
 
 3. Start a new session.
-4. Type `/progress-tracker-demo`. A sample bar plays above the prompt for about 25 seconds.
+4. Type `/progress-tracker-demo`. A sample run plays above the prompt for about 30 seconds.
 
 Only one mod can draw in the band above the prompt. If you also use `plan-progress`, turn it off:
 
@@ -33,46 +47,80 @@ The desktop app loads mods from the `CLAUDE_CODE_PLUGIN_DIRS` variable in the `e
 
 ## Watch the demo
 
-`/progress-tracker-demo` plays a 7-step job on its own row. The demo shows every feature in order:
+`/progress-tracker-demo` plays a 7-step job on its own row:
 
 1. The Progress pane opens, and the row expands to list its tasks.
 2. Three file reads run in parallel.
 3. A sub-agent runs, and the pill shows `· 1 agent`.
-4. The "Test" step fails twice. The row turns red, the pill shows `×2`, and "Found" lists the failure and a finding.
-5. The step recovers. Then the row turns amber, and "Blocked on me" lists `Allow npm publish` until it is answered.
-6. The bar finishes green. The row and its pane entries clear about 12 seconds later.
+4. The "Test" step fails twice. The row turns red, the pill shows `×2`, and the **Found** tab lists the failure and a finding.
+5. The step recovers. Then the row turns amber, and **Blocked on me** lists `Allow npm publish` until it is answered.
+6. The bar finishes green. About 12 seconds later, the row and its pane entries clear.
 
 The demo bar moves even while Claude is idle.
 
-## What the bar shows
+## Read the bar
 
-Each task list gets one row, and the mod shows at most 3 rows. A row has a label, the bar, measured numbers, and buttons. The row shows only numbers the mod measures. It does not guess how much time is left.
+Each task list gets one row, and the band shows at most 3 rows. A row has a label, the bar, its numbers, and buttons.
 
-- The label is the approved plan's title, the title Claude gave the list, or the first task.
-- The pill on the bar names the current task and its step, for example `Write tests 3/5`.
-- For a list Claude declared, the pill shows `3/5` and the row shows the percent of finished tasks.
-- For an automatic bar (Working or Planning), the total is not known. The pill counts steps, for example `Working · 12 steps`, and the bar is full and moving, with no percent.
-- `work` is the time Claude was busy on the list: time inside Claude's turns, less the time it waited for you. Idle time between your messages does not count.
-- `wait` is the time the row was amber, waiting for your answer or permission.
-- `1.2M in · 14k out` adds up the tokens that each model response reported while the list ran, sub-agents included. Input counts every prompt token the model read: uncached, read from the prompt cache, and written to it. Each call reads the whole conversation again, so input grows much faster than output, and most of it comes from the cache.
-- When the context window is 80% full or more, the row adds `context 85%`.
-- `▸` (terminal) or `▶ Tasks` (desktop) lists every task with its time, while the row runs or after it finishes.
-- `☰` opens the Progress pane. `✕` hides the row.
-- When a check fails more than once in a task, the pill counts the runs, for example `✕ Test 3/5 ×3`.
-- A toast tells you when a row starts to wait for you, and when a task list finishes, for example `✓ Fix login done in 12m · 2 retries`.
+The label is the approved plan's title, the title Claude gave the list, or the first task.
 
 The colour of a row tells you its state:
 
 | Colour | State | Pill text |
 | --- | --- | --- |
-| Purple | Claude is working | `Build 2/5` or `Working · 12 steps` |
-| Red | A check failed in the current step | `✕ Verify 1/2` |
-| Amber | Claude waits for you | `Waiting for you` or `Waiting for approval` |
-| Green | Every task is done | `✓ Done 5/5` or `✓ Done · 12 steps` |
+| Purple | Claude is working. | `Build 2/5` or `Working · 12 steps` |
+| Red | A check failed in the current task. | `✕ Verify 1/2` or `✕ Test 3/5 ×3` |
+| Amber | Claude waits for you. | `Waiting for you` or `Waiting for approval` |
+| Green | Every task is done. | `✓ Done 5/5` or `✓ Done · 12 steps` |
 
-The bar moves while Claude works, on purple and red rows. It holds still while Claude waits for you. A finished green bar keeps a slow twinkle in the desktop app and holds still in the terminal. In the terminal, the mod draws the bar with block characters and repaints it about 15 times a second. In the desktop app, the bar is an SVG that animates itself.
+The numbers after the bar are all measured:
+
+| Number | Meaning |
+| --- | --- |
+| `60%` | The finished tasks of a list that Claude declared. An automatic bar has no percent. |
+| `4m 10s work` | The time inside Claude's turns while the list ran, less the time it waited on you. Idle time between your messages does not count. |
+| `1m 05s wait` | The time the row was amber. |
+| `1.2M in · 14k out` | The tokens that each model response reported while the list ran, sub-agents included. |
+| `context 85%` | The context window's fill. It appears from 80%. |
+
+Input counts every prompt token the model read: uncached tokens, tokens read from the prompt cache, and tokens written to it. Each model call reads the whole conversation again, so input grows much faster than output, and most of it comes from the cache.
+
+The buttons on a row:
+
+| Button | Action |
+| --- | --- |
+| `▸` in the terminal, `▶ Tasks` on desktop | Lists every task with its time. |
+| `☰` | Opens the Progress pane. |
+| `✕` | Hides the row. |
+
+A toast appears when a row starts to wait for your answer or permission, and when a task list finishes, for example `✓ Fix login done in 12m 03s · 2 retries`.
 
 A finished row hides itself after a minute. New tasks after a finished list start a new row. At the next session start, the mod drops rows that are finished, hidden, or older than 12 hours.
+
+The bar moves while Claude works on a purple or red row. It holds still while the row is amber. In the terminal, the mod draws the bar with block characters and repaints it about 15 times a second. On desktop, the bar is an SVG that animates itself, and a finished bar keeps a slow twinkle.
+
+## Use the Progress pane
+
+To open the pane, type `/progress` or press `☰` on a row.
+
+The top of the pane names the current list and shows its numbers as tiles: progress, this task's time, time worked, time waited on you, tokens in with the cached share, tokens out, model calls, and context. The tiles wrap when the pane is narrow.
+
+The pane has two tabs. Press `1` or `2` to switch.
+
+| Tab | Shows |
+| --- | --- |
+| Blocked on me | Permission prompts, questions, and plan approvals. Open ones come first. Answered ones say how long they waited. |
+| Found | Each failing check, once per red spell, and the findings Claude logged with `found`. |
+
+To open an entry's details, press its title (`▸`). To close them, press it again. The details depend on the kind of entry:
+
+- A question shows each question, its options, and the answer you gave.
+- A permission prompt shows the tool, the full request, and how the call ended: it ran, it ran and ended with an error, or it did not run.
+- A plan approval shows the plan's title, its number of steps, and whether you approved it.
+- A failing check shows the command and up to 8 output lines that name the problem.
+- A finding shows its full text.
+
+Every entry also shows its task, how long it waited, and the time. The pane keeps the last 50 entries of each kind.
 
 ## Where the tasks come from
 
@@ -80,11 +128,11 @@ The mod reads only the main conversation. It ignores task calls that sub-agents 
 
 ### Claude's task tools
 
-In the terminal, Claude's `TaskCreate`, `TaskUpdate`, and `TodoWrite` calls fill the bar. When you approve a plan in plan mode, the plan gets its own row, with the plan's title and its numbered or bulleted steps. Claude's first task list then replaces those steps.
+In the terminal, Claude's `TaskCreate`, `TaskUpdate`, and `TodoWrite` calls fill the bar. When you approve a plan in plan mode, the plan gets its own row with the plan's title and its numbered or bulleted steps. Claude's first task list then replaces those steps.
 
 ### The `progress_tracker` tool
 
-The desktop app has no `TaskCreate` or `TodoWrite`, so the mod adds its own tool, `mcp__progress-tracker__progress_tracker`. The mod also adds a short rule to the system prompt that tells Claude to use the tool for work of more than about 3 edits or commands.
+The desktop app has no `TaskCreate` or `TodoWrite`, so the mod adds its own tool, `mcp__progress-tracker__progress_tracker`. The mod also adds a short rule to the system prompt. The rule tells Claude to use the tool for work of more than about 3 edits or commands.
 
 | Field | Type | Effect |
 | --- | --- | --- |
@@ -96,7 +144,7 @@ The desktop app has no `TaskCreate` or `TodoWrite`, so the mod adds its own tool
 | `skip` | boolean | Closes the current task as not needed. Its part of the bar is drawn dimmer. |
 | `failed` | string | Turns the row red with this reason. |
 | `fixed` | boolean | Clears the red state. |
-| `found` | string | Adds a finding (a bug, root cause or decision) to the pane's "Found" tab. Works without a row. |
+| `found` | string | Adds a finding, such as a bug, a root cause, or a decision, to the **Found** tab. It works without a row. |
 
 The tool replies with the state of the row, for example `2/5, running, active "Write tests", next "Docs"`. If Claude names a task that does not exist, the tool refuses the call and lists the task names.
 
@@ -104,56 +152,38 @@ If Claude makes 12 tool calls without moving the bar, the mod adds one note to a
 
 ### The Working bar
 
-Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". When the turn ends, the open step becomes "Write reply", and the row turns green. If Claude sends its own list with `progress_tracker`, `TaskCreate` or `TodoWrite`, that list replaces the automatic steps, and the row shows a real total.
+Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". The pill counts the steps, because the total is not known. When the turn ends, the open step becomes "Write reply", and the row turns green.
 
-On the 3rd tool call, Claude also gets a short note that only it reads: if more steps are coming, send the task list now. This way most work gets a real total early.
+On that 3rd tool call, Claude also gets a note that only it reads. The note asks Claude to send its task list if more steps are coming. When Claude sends a list with `progress_tracker`, `TaskCreate`, or `TodoWrite`, the list replaces the automatic steps, and the row shows a real total.
 
 ### Plan mode
 
-In plan mode, a row named "Planning" appears. Each tool call becomes a finished step, until Claude sends its own planning steps with `progress_tracker`. The row turns amber while Claude asks you to approve the plan. Whether you approve or reject the plan, the Planning row turns green. If you leave plan mode without an answer to a plan, the mod removes the Planning row.
+In plan mode, a row named "Planning" appears. Each tool call becomes a finished step until Claude sends its own planning steps with `progress_tracker`. The row turns amber while Claude asks you to approve the plan. Whether you approve or reject the plan, the Planning row turns green. If you leave plan mode without an answer to a plan, the mod removes the Planning row.
 
 ### Waits, failures, and sub-agents
 
-- When Claude asks you a question with `AskUserQuestion`, or a permission prompt waits for you, the row turns amber until you answer.
+- When Claude asks you a question with `AskUserQuestion`, or when a permission prompt waits for you, the row turns amber until you answer.
 - When a check command fails during a task, the row turns red and shows the first error line of the output. A check is a test, build, lint, or typecheck command. The command's first words decide: `pytest`, `tsc`, `ruff`, `make`, `npm test`, `cargo build`, `go test`, and `.venv/bin/pytest` all count. Commands such as `grep`, `go run`, `npm run dev`, and `test -f` do not count, even when they exit with code 1.
-- The row turns back from red when the same check passes, with any flags, or when a task changes state.
+- The row turns back from red when the same check passes with any flags, or when a task changes state.
 - While sub-agents that Claude started in this conversation run, the pill shows how many, for example `Search 1/3 · 2 agents`. Agents from other places do not count.
-
-## The Progress pane
-
-Type `/progress` or press `☰` on a row. The top of the pane names the current list and its measured numbers: percent done (or steps, when the total is unknown), how long the current task has run, work time, wait time, the list's tokens (input with its cached share, output, and the number of model calls), and the context fill.
-
-The pane has two tabs; press `1` or `2` to switch. Press an entry's title (`▸`) to open its details under it, and press it again to close them:
-
-- A question: each question, its options, and the answer you gave.
-- A permission prompt: the tool, what it asked to do in full, and how the call ended (it ran, it ran and ended with an error, or it did not run).
-- A plan approval: the plan's title, its number of steps, and whether it was approved.
-- A failing check: the command and up to 8 output lines that name the problem.
-- A finding: the full text.
-
-Every entry also shows its task, how long it waited, and the time.
-
-| Tab | Shows |
-| --- | --- |
-| Blocked on me | Permission prompts, questions and plan approvals. Open ones come first; answered ones say how long they waited. |
-| Found | Findings Claude logged with `found`, and each failing check (once per red spell). |
-
-Each entry names the task that was running and the time. The pane keeps the last 50 entries of each kind.
 
 ## Read the task timeline
 
-In the desktop app, press `▶ Tasks` on a finished row to open its timeline. A line connects the steps, and each row shows how long its step took.
+On desktop, press `▶ Tasks` on a row to open its timeline. A line connects the steps, and each step shows how long it took. A running task shows its time so far.
 
 - For an automatic step, the time is how long the tool call ran. For one of Claude's own tasks, the time runs from the task's start to its finish.
 - Steps whose run times overlap leave the line on a branch and join it again. The first of them says `· 3 in parallel`.
-- A sub-agent row has a robot icon and the agent type, for example `· Explore agent`. A sub-agent that starts during one of Claude's own tasks appears under that task, on a branch.
+- A sub-agent step has a robot icon and the agent type, for example `· Explore agent`. A sub-agent that starts during one of Claude's own tasks appears under that task, on a branch.
 - A sub-agent that runs in the background shows `background` instead of a time.
+- A task that failed shows how many times, for example `· failed ×2`.
 
-The timeline moves. When it opens, the line draws itself from the top, and the dots appear one by one. Then a light pulse runs down the line on a loop and splits into the branches. Each dot gives a ring as the pulse passes, and the robot heads blink.
+When the timeline opens, the line draws itself from the top, and the dots appear one by one. Then a light pulse runs down the line on a loop and splits into the branches.
 
 ## Known limits
 
 - Only steps that overlap in time count as parallel. Claude Code runs file reads at the same time, but it often runs shell commands one after another. So Bash calls that Claude sends together can still appear in a straight line.
+- Work time and tokens count from when the mod loaded. A row that was open before a reload shows only what happened after it.
+- A permission entry says how the call ended, not who decided. A hook or a settings rule can also stop a call.
 - Each timeline row is a small sandboxed frame. A long task list runs many animated frames at once.
 - The timeline colours are tuned for the dark theme.
 
@@ -185,6 +215,12 @@ To run the mod against a stand-in for Claude Code, without Claude Code:
 node dev/simulate.mjs
 ```
 
+To redraw `docs/demo.gif` from the mod's own bar and timeline SVGs, you need Google Chrome in `/Applications` and Python 3 with Pillow:
+
+```bash
+node design/demo-gif.mjs
+```
+
 To write an animated preview of a terminal bar design to `design/preview-two-row-smooth.html`:
 
 ```bash
@@ -199,13 +235,14 @@ node design/harness.mjs two-row-smooth
 | --- | --- |
 | `.claude-plugin/plugin.json` | The plugin manifest. |
 | `.claude-plugin/marketplace.json` | The `mjoyshuvo-mods` marketplace entry. |
-| `hooks/progress-tracker.mjs` | The hooks: task tracking, plan mode, the Working bar, the `progress_tracker` tool, and drawing. |
+| `hooks/progress-tracker.mjs` | The hooks: task tracking, plan mode, the Working bar, the `progress_tracker` tool, the Progress pane, and drawing. |
 | `hooks/bar.mjs` | The terminal bar (`barCells`). |
 | `hooks/bar-svg.mjs` | The desktop bar (`barSvg`). |
 | `hooks/timeline-svg.mjs` | The task timeline rows (`timelineSvg`). |
-| `types/index.d.ts` | The type of the stored rows. |
+| `types/index.d.ts` | The types of the stored rows and the pane's log. |
 | `tests/progress-tracker.test.ts` | The tests. |
 | `dev/simulate.mjs` | The stand-in run. |
+| `design/demo-gif.mjs` | Draws `docs/demo.gif`. `design/frames-to-gif.py` joins its frames. |
 | `design/` | Bar design previews and variants. |
 
 ## Why I built it
