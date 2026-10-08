@@ -4,23 +4,9 @@ progress-tracker is a Claude Code mod that shows what Claude is doing while it w
 
 ![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes green with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
 
-## Features
-
-- **Live bar.** Each task list gets a row with a moving bar. The pill names the current task and its step, for example `Write tests 3/5`.
-- **Real totals only.** A list that Claude declares shows `3/5` and a percent. Work without a list shows a step count, for example `Working · 12 steps`, because its total is not known.
-- **Early task list.** On the 3rd tool call of a turn with no list, the mod asks Claude for its task list, so most work gets a real total.
-- **Waits on you.** A question, a permission prompt, or a plan approval turns the row amber. A question or a permission prompt also shows a toast.
-- **Failing checks.** A failing test, build, lint, or typecheck turns the row red and shows the first error line. The pill counts repeated failures, for example `×3`.
-- **Measured numbers.** The row shows the time Claude worked, the time it waited on you, and the input and output tokens that the API reported. It does not guess the time left.
-- **Context warning.** From 80% full, the row shows the context fill.
-- **Progress pane.** `/progress` opens a pane with the numbers as labelled tiles and two tabs: **Blocked on me** and **Found**. Press an entry to open its details.
-- **Task timeline.** Each row expands to list its tasks with their times. On desktop, parallel steps and sub-agents appear on a branch.
-- **Sub-agent count.** While sub-agents that Claude started run, the pill shows how many.
-- **Plan mode.** Planning gets its own row, and an approved plan becomes a row with the plan's steps.
-
 ## Install the mod
 
-Mods are an early-access Claude Code feature. You need Claude Code 2.1.287 or later, with function hooks switched on for your account.
+Before you install, check that you can run mods. Mods are an early-access Claude Code feature. You need Claude Code 2.1.287 or later, with function hooks switched on for your account. Without them, the mod's hooks do not run, and no bar appears.
 
 1. In Claude Code, add the marketplace:
 
@@ -44,6 +30,20 @@ claude plugin disable plan-progress@zycck-mods
 ```
 
 The desktop app loads mods from the `CLAUDE_CODE_PLUGIN_DIRS` variable in the `env` block of `~/.claude/settings.json`. To load a local copy there, set that variable to the mod's folder, for example `~/.claude/progress-tracker`.
+
+## Features
+
+- **Live bar.** Each task list gets a row with a moving bar. The pill names the current task and its step, for example `Write tests 3/5`.
+- **Real totals only.** A list that Claude declares shows `3/5` and a percent. Work without a list shows a step count, for example `Working · 12 steps`, because its total is not known.
+- **Early task list.** On the 3rd tool call of a turn with no list, the mod asks Claude for its task list, so most work gets a real total.
+- **Waits on you.** A question, a permission prompt, or a plan approval turns the row amber. A question or a permission prompt also shows a toast.
+- **Failing checks.** A failing test, build, lint, or typecheck turns the row red and shows the first error line. The pill counts repeated failures, for example `×3`.
+- **Measured numbers.** The row shows the time Claude worked, the time it waited on you, and the input and output tokens that the API reported. It does not guess the time left.
+- **Context warning.** From 80% full, the row shows the context fill.
+- **Progress pane.** `/progress` opens a pane with the numbers as labelled tiles and two tabs: **Blocked on me** and **Found**. Press an entry to open its details.
+- **Task timeline.** Each row expands to list its tasks with their times. On desktop, parallel steps and sub-agents appear on a branch.
+- **Sub-agent count.** While sub-agents that Claude started run, the pill shows how many.
+- **Plan mode.** Planning gets its own row, and an approved plan becomes a row with the plan's steps.
 
 ## Watch the demo
 
@@ -248,3 +248,9 @@ node design/harness.mjs two-row-smooth
 ## Why I built it
 
 I found a Claude Code mod that shows a progress bar above the prompt, [zycck/claude-mods](https://github.com/zycck/claude-mods), but I couldn't get it working on my machine. So I built my own version to learn how mods work.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+If the mod helps you, a star on GitHub helps other people find it.
