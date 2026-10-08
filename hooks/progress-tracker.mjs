@@ -29,6 +29,23 @@ const animation = { timer: null, requestId: null, bars: [], t: 0 };
 
 // Held by the host, so tracks survive a hot reload of this file.
 const TRACKS = { plugin: "progress-tracker", key: "tracks" };
+// The session's log for the Progress pane: what waited on the person, and what Claude
+// found. Kept apart from the tracks, so it outlives them.
+const LOG = { plugin: "progress-tracker", key: "log" };
+const LOG_CAP = 50;
+// The Progress pane and its selected tab.
+const PANE = "progress";
+const TAB = { plugin: "progress-tracker", key: "tab" };
+// The pane entry whose details are open, by id; null when none is.
+const OPEN = { plugin: "progress-tracker", key: "open" };
+const TABS = [
+  { id: "blocked", label: "Blocked on me", hotkey: "1" },
+  { id: "found", label: "Found", hotkey: "2" },
+];
+// When the main loop's running turn began, or null between turns: work time counts only inside turns.
+const TURN = { plugin: "progress-tracker", key: "turn" };
+// The progress_tracker inputs that move the bar; a call with none of them only logs a finding.
+const TOOL_OPS = new Set(["title", "tasks", "next", "active", "add", "skip", "failed", "fixed"]);
 
 // Parallel tool calls each read-modify-write the tracks; run them one by one.
 let queue = Promise.resolve();
@@ -39,6 +56,9 @@ const AUTO_BAR_CALLS = 3;
 let turnSteps = [];
 let hasTurnBar = false;
 let lastMode = null;
+// Tokens the running turn's model calls used so far, so a Working bar that starts on the
+// turn's 3rd tool call still counts the calls before it.
+let turnTokens = emptyTokens();
 
 // The sub-agents the main loop started, by the Agent call that started each one.
 // The pill counts these alone; the timeline marks the call's step as a sub-agent.
@@ -48,7 +68,7 @@ const spawned = new Map();
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
 const RULES = `# Progress bar
-Work over ~3 edits/commands, plan mode included: call ${TOOL} with {title, tasks:[3-8 short names]}, then {next:true} per finished task, {active:"name"}, {add:["found work"]}, {skip:true}, {failed:"why"}, {fixed:true}. Don't mention the bar.`;
+Work over ~3 edits/commands, plan mode included: call ${TOOL} with {title, tasks:[3-8 short names]}, then {next:true} per finished task, {active:"name"}, {add:["found work"]}, {skip:true}, {failed:"why"}, {fixed:true}, {found:"a bug, root cause or decision worth keeping"}. Don't mention the bar.`;
 
 export function register(on) {
   on("session.start", async ($, e, next) => {
@@ -61,7 +81,7 @@ export function register(on) {
     await $.tool.register({
       name: TOOL_NAME,
       description:
-        "Live progress bar above the prompt. Use it for any work over ~3 edits/commands, plan mode included: create with title + 3-8 short tasks, then call with next per finished task, active, add, skip, failed or fixed. Don't mention the bar.",
+        "Live progress bar above the prompt. Use it for any work over ~3 edits/commands, plan mode included: create with title + 3-8 short tasks, then call with next per finished task, active, add, skip, failed or fixed; found logs a finding. Don't mention the bar.",
       inputSchema: {
         type: "object",
         properties: {
@@ -73,16 +93,23 @@ export function register(on) {
           skip: { type: "boolean", description: "Current task is not needed; close it and start the next" },
           failed: { type: "string", description: "What broke, one line" },
           fixed: { type: "boolean", description: "The failure is resolved" },
+          found: { type: "string", description: "A bug, root cause or decision worth keeping, one line" },
         },
       },
     });
     await $.command.register({ name: "progress-tracker-demo", description: "Play a sample run of the progress bar" });
+    await $.command.register({ name: "progress", description: "Show what waits on you and what was found" });
     return result;
+  });
+
+  on("command.run", { command: "progress" }, async ($) => {
+    await openPane($);
+    return { text: "Opened the Progress pane." };
   });
 
   on("command.run", { command: "progress-tracker-demo" }, async ($) => {
     await playDemo($);
-    return { text: "Playing a progress-tracker demo above the prompt (about 25 seconds)." };
+    return { text: "Playing a progress-tracker demo above the prompt (about 30 seconds)." };
   });
 
   on("prompt.compose", async ($, e, next) => {
@@ -94,6 +121,8 @@ export function register(on) {
   on("tool.describe", { tool: TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }));
 
   on("tool.call", { tool: TOOL }, async ($, e) => {
+    if (typeof e.found === "string" && e.found.trim()) await logFinding($, "found", e.found.trim(), e.tool_use_id);
+    if (typeof e.found === "string" && !Object.keys(e).some((k) => TOOL_OPS.has(k))) return { result: "noted" };
     if (Array.isArray(e.tasks) && e.tasks.length > 0) {
       const tasks = e.tasks.map((subject, i) => ({
         id: `step${i + 1}`,
@@ -106,7 +135,7 @@ export function register(on) {
         const isFreshPlan = active?.isFromPlan && !active.tasks.some((t) => t.status === "completed");
         if (isFreshPlan || active?.isAutoSteps) {
           const label = active.isAutoSteps && e.title ? String(e.title) : active.label;
-          return replace(tracks, { ...active, label, tasks, failedCommand: null, isFromPlan: false, isAutoSteps: false });
+          return replace(tracks, { ...active, ...declared(active), label, tasks, failedCommand: null });
         }
         return [...tracks, { ...newTrack(tracks, e.title ? String(e.title) : null), tasks }];
       });
@@ -168,6 +197,24 @@ export function register(on) {
     return next(e);
   });
 
+  // A permission dialog waits on the person: the bar turns amber and the pane lists it.
+  on("classic.PermissionRequest", async ($, e, next) => {
+    if (!e.agent_id) {
+      const input = typeof e.tool_input === "object" && e.tool_input ? e.tool_input : {};
+      const what = e.tool_name === "Bash" && input.command ? String(input.command).trim() : stepNameOf({ ...input, tool: e.tool_name });
+      await openBlock($, "permission", `Allow ${what}`, { details: { tool: String(e.tool_name ?? ""), request: requestOf(e.tool_name, input) } });
+    }
+    return next(e);
+  });
+
+  // Where no PermissionRequest fires, the permission notification stands in for it.
+  on("classic.Notification", async ($, e, next) => {
+    if (!e.agent_id && e.notification_type === "permission_prompt") {
+      await openBlock($, "permission", String(e.message ?? "Needs your permission"), { isFallback: true });
+    }
+    return next(e);
+  });
+
   on("classic.PreToolUse", async ($, e, next) => {
     if (!e.agent_id) await followMode($, e.permission_mode);
     return next(e);
@@ -176,19 +223,43 @@ export function register(on) {
   on("tool.call", async ($, e, next) => {
     const startedAt = Date.now();
     const r = await next(e);
-    if (e.agentId || NOT_A_STEP.has(e.tool)) return r;
+    if (e.agentId) return r;
+    // The call ran or was refused: whatever it asked of the person is answered.
+    await noteBlock($, (b) => b.kind === "permission" && b.outcome == null && (b.answeredAt == null || b.toolUseId === e.tool_use_id), {
+      outcome: outcomeOf(r),
+    });
+    await closeBlocks($, e.tool_use_id);
+    if (NOT_A_STEP.has(e.tool)) return r;
     const step = stepOf(e, startedAt);
     await onPlanning($, (t) => (t.isAutoSteps && !t.isWaiting ? autoStep(t, step) : t));
-    await autoWork($, step);
+    const listNudge = await autoWork($, step);
     if (step.agent) await noteAgentRun($, step);
-    const nudge = await countWork($);
-    return nudge && r.deny === undefined ? { ...r, context: [...(r.context ?? []), nudge] } : r;
+    const nudges = [listNudge, await countWork($)].filter(Boolean);
+    return nudges.length > 0 && r.deny === undefined ? { ...r, context: [...(r.context ?? []), ...nudges] } : r;
+  });
+
+  // Every model response reports its tokens; they count toward the list that is running.
+  // Sub-agents' responses count too: their work is part of the list's work.
+  // turn.step streams, so its hook is an async generator that forwards the stream untouched.
+  on("turn.step", async function* ($, e, next) {
+    const r = yield* next(e);
+    const tokens = tokensOfUsage(r?.usage);
+    if (!tokens) return r;
+    if (!e.agentId) turnTokens = addTokens(turnTokens, tokens);
+    await update($, (tracks) => {
+      const active = activeOf(tracks);
+      if (!active || isComplete(active) || active.isDemo) return tracks;
+      return replace(tracks, { ...active, tokens: addTokens(active.tokens, tokens) });
+    });
+    return r;
   });
 
   on("turn.start", async ($, e, next) => {
     if (!e.agentId) {
       turnSteps = [];
+      turnTokens = emptyTokens();
       hasTurnBar = false;
+      await $.state.set(TURN, Date.now());
     }
     return next(e);
   });
@@ -198,6 +269,10 @@ export function register(on) {
   on("turn.complete", async ($, e, next) => {
     if (!e.agentId) {
       await update($, (tracks) => tracks.map((t) => (t.isWorkBar && t.isAutoSteps ? closeWorkBar(t) : t)));
+      await closeBlocks($);
+      const { value: turnStartedAt = null } = await $.state.get(TURN);
+      await $.state.set(TURN, null);
+      if (turnStartedAt != null) await update($, (tracks) => tracks.map((t) => addTurn(t, turnStartedAt, Date.now())));
     }
     return next(e);
   });
@@ -207,7 +282,14 @@ export function register(on) {
   on("tool.call", { tool: "ExitPlanMode" }, async ($, e, next) => {
     if (e.agentId) return next(e);
     await onPlanning($, (t) => ({ ...toStep(t, t.tasks.length - 1), isWaiting: true }));
+    await openBlock($, "approval", "Approve the plan", { keepsBar: true, toolUseId: e.tool_use_id });
     const r = await next(e);
+    const approved = typeof e.plan === "string" ? e.plan : r.result?.plan;
+    await noteBlock($, (b) => b.kind === "approval" && b.toolUseId === e.tool_use_id, {
+      outcome: isAnswered(r) ? "Approved" : "Not approved",
+      details: { plan: planTitleOf(approved), steps: planStepsOf(approved).length },
+    });
+    await closeBlocks($);
     await onPlanning($, (t) => ({
       ...toStep(t, t.tasks.length),
       isPlanning: false,
@@ -226,16 +308,23 @@ export function register(on) {
   // A question to the person turns the working bar amber until it is answered.
   on("tool.call", { tool: "AskUserQuestion" }, async ($, e, next) => {
     if (e.agentId) return next(e);
-    const setWaiting = (isWaiting) =>
-      update($, (tracks) => {
-        const active = activeOf(tracks);
-        return active && !isComplete(active) ? replace(tracks, { ...active, isWaiting }) : tracks;
-      });
-    await setWaiting(true);
+    const questions = (Array.isArray(e.questions) ? e.questions : []).map((q) => ({
+      question: String(q?.question ?? ""),
+      options: (Array.isArray(q?.options) ? q.options : []).map((o) => String(o?.label ?? o)),
+    }));
+    await openBlock($, "question", questions[0]?.question || "A question for you", { toolUseId: e.tool_use_id, details: { questions } });
+    let r;
     try {
-      return await next(e);
+      r = await next(e);
+      return r;
     } finally {
-      await setWaiting(false);
+      // The answers come back keyed by the question's text.
+      const answers = isAnswered(r ?? {}) && r.result && typeof r.result.answers === "object" ? r.result.answers : null;
+      await noteBlock($, (b) => b.kind === "question" && b.toolUseId === e.tool_use_id, {
+        outcome: answers ? "Answered" : "Not answered",
+        answers: answers ? Object.fromEntries(Object.entries(answers).map(([q, a]) => [q, String(a)])) : null,
+      });
+      await closeBlocks($);
     }
   });
 
@@ -245,9 +334,11 @@ export function register(on) {
     const id = String(r.result?.task?.id ?? e.tool_use_id);
     const task = { id, subject: String(e.subject ?? ""), status: "pending" };
     await update($, (tracks) => {
-      // Claude's first task after an approved plan replaces the plan's own steps.
+      // Claude's first task after an approved plan, or on an automatic bar, replaces its steps.
       const active = activeOf(tracks);
-      if (active?.isFromPlan) return replace(tracks, { ...active, tasks: [task], isFromPlan: false });
+      if (active?.isFromPlan || (active?.isCounter && !isComplete(active))) {
+        return replace(tracks, { ...active, ...declared(active), tasks: [task] });
+      }
       return withActive(tracks, (t) => ({ ...t, tasks: [...t.tasks, task] }));
     });
     return r;
@@ -283,7 +374,7 @@ export function register(on) {
       subject: String(todo.content ?? ""),
       status: todo.status,
     }));
-    await update($, (tracks) => withActive(tracks, (t) => ({ ...t, tasks, isFromPlan: false }), tasks));
+    await update($, (tracks) => withActive(tracks, (t) => ({ ...t, ...declared(t), tasks }), tasks));
     return r;
   });
 
@@ -295,7 +386,7 @@ export function register(on) {
       const active = activeOf(tracks);
       if (!active || isComplete(active)) return tracks;
       if (r.isError && isCheck(command)) {
-        return replace(tracks, { ...active, failedCommand: command, failedReason: errorLineOf(r.result) });
+        return replace(tracks, { ...active, failedCommand: command, failedReason: errorLineOf(r.result), failedLines: errorLinesOf(r.result), failedRuns: (active.failedRuns ?? 0) + 1, failedToolUseId: e.tool_use_id });
       }
       if (!r.isError && active.failedCommand && sameCheck(active.failedCommand, command)) {
         return replace(tracks, { ...active, failedCommand: null, failedReason: null });
@@ -316,6 +407,7 @@ export function register(on) {
       .filter((t) => !t.isDismissed && t.tasks.length > 0)
       .map((t, i, all) => (i === all.length - 1 ? { ...t, agents: t.isDemo ? (t.demoAgents ?? 0) : agents } : t));
     const ui = $.ui.resolve(e);
+    const ctx = await contextOf($);
     const dismiss = (id) => () =>
       void update($, (all) => all.map((t) => (t.id === id ? { ...t, isDismissed: true } : t)));
     const toggle = (id) => () =>
@@ -325,20 +417,38 @@ export function register(on) {
     if (e.surface !== "terminal") {
       animate($, null, []);
       if (shown.length === 0) return next(e);
-      return drawDesktop(ui, shown.slice(-MAX_ROWS), e.props, dismiss, toggle);
+      return drawDesktop(ui, shown.slice(-MAX_ROWS), e.props, { dismiss, toggle, pane: () => void openPane($) }, ctx);
     }
 
     const rows = shown
       .slice(-Math.max(1, Math.min(MAX_ROWS, Math.floor(e.props.maxRows / BAR_ROWS))))
-      .map((t) => rowOf(t, e.props.bodyColumns - 2));
+      .map((t) => rowOf(t, e.props.bodyColumns - 2, ctx));
     animate($, e.requestId, rows.filter((r) => r.bar && isLive(r.status) && (e.props.isWorking || r.isDemo)));
     if (rows.length === 0) return next(e);
 
+    // Expanded rows share the rows the bars leave free, in order.
+    let spare = e.props.maxRows - rows.length * BAR_ROWS;
+    const actions = { dismiss, toggle, pane: () => void openPane($) };
     return ui.Box({
       flexDirection: "column",
       paddingX: 1,
-      children: rows.map((r) => draw(ui, r, dismiss(r.id))),
+      children: rows.map((r) => {
+        const lines = r.isExpanded ? Math.max(0, spare) : 0;
+        spare -= lines;
+        return draw(ui, r, actions, lines);
+      }),
     });
+  });
+
+  on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
+    const { value: log = emptyLog() } = await $.state.get(LOG);
+    const { value: saved = "blocked" } = await $.state.get(TAB);
+    const tab = TABS.some((t) => t.id === saved) ? saved : "blocked";
+    const { value: tracks = [] } = await $.state.get(TRACKS);
+    const active = activeOf(tracks.filter((t) => t.tasks.length > 0));
+    const { value: openId = null } = await $.state.get(OPEN);
+    const kit = { ...$.ui.resolve(e), openId, toggle: (id) => () => void $.state.set(OPEN, openId === id ? null : id) };
+    return drawPane(kit, { log, tab, track: active, ctx: await contextOf($) }, (id) => () => void $.state.set(TAB, id));
   });
 }
 
@@ -350,14 +460,107 @@ function update($, change) {
       const { value: tracks = [] } = await $.state.get(TRACKS);
       let changed = change(tracks);
       if (changed === tracks) return;
-      changed = changed.map((t) => stampDone($, stampTasks(t)));
+      const before = new Map(tracks.map((t) => [t.id, t]));
+      changed = changed.map((t) => stampWait(before.get(t.id), stampDone($, stampFailure(before.get(t.id), stampTasks(t)))));
       await $.state.set(TRACKS, changed);
+      for (const t of changed) notify($, before.get(t.id), t);
+      const failures = changed.filter((t) => t.failureToLog && t.failureToLog !== before.get(t.id)?.failureToLog);
+      if (failures.length > 0) {
+        await writeLog($, (log) => ({
+          ...log,
+          findings: capped([...log.findings, ...failures.map((t, i) => ({ kind: "failed", ...t.failureToLog, id: entryId("failed", log.findings.length + i), at: Date.now(), isDemo: t.isDemo }))]),
+        }));
+      }
     })
     .catch(() => undefined);
   return queue;
 }
 
-// Notes when each task starts and finishes, for the time-left guess. A reopened task loses its finish.
+// ---- measured numbers: work, wait, tokens, context ----
+
+// A list Claude declared itself: its total is real, so the bar counts x/y again.
+function declared(track) {
+  return {
+    isFromPlan: false,
+    isAutoSteps: false,
+    isCounter: false,
+    isWorkBar: false,
+    label: track.isWorkBar ? null : track.label,
+  };
+}
+
+// Time spent waiting on the person: from the moment the bar turns amber until it turns back.
+function stampWait(old, track) {
+  const now = Date.now();
+  if (track.isWaiting && !old?.isWaiting) return { ...track, waitingSince: now };
+  if (!track.isWaiting && old?.isWaiting && track.waitingSince != null) {
+    return { ...track, waitMs: (track.waitMs ?? 0) + (now - track.waitingSince), waitingSince: null };
+  }
+  return track;
+}
+
+// A finished turn adds the part of it that overlaps the track's own life.
+function addTurn(track, turnStart, turnEnd) {
+  if (track.isDemo) return track;
+  const overlap = Math.min(turnEnd, track.doneAt ?? turnEnd) - Math.max(turnStart, track.startedAt ?? turnStart);
+  return overlap > 0 ? { ...track, turnMs: (track.turnMs ?? 0) + overlap } : track;
+}
+
+// Work: the time Claude was in a turn while the track ran, less the time it waited on the
+// person. Idle time between turns counts as neither. The demo runs outside any turn.
+export function workOf(track, now, turnStartedAt) {
+  const end = Math.min(now, track.doneAt ?? now);
+  const start = track.isDemo ? track.startedAt : turnStartedAt;
+  const live = start != null ? Math.max(0, end - Math.max(start, track.startedAt ?? start)) : 0;
+  return Math.max(0, (track.turnMs ?? 0) + live - waitOf(track, now));
+}
+
+export function waitOf(track, now) {
+  return (track.waitMs ?? 0) + (track.waitingSince != null ? now - track.waitingSince : 0);
+}
+
+// The context window's fill as the engine reports it; null where it reports none.
+async function usageOf($) {
+  try {
+    const usage = await $.session.usage();
+    return { contextPercent: usage.context?.percent ?? null };
+  } catch {
+    return { contextPercent: null };
+  }
+}
+
+async function contextOf($) {
+  const { value: turnStartedAt = null } = await $.state.get(TURN);
+  return { now: Date.now(), turnStartedAt, ...(await usageOf($)) };
+}
+
+// Tokens as the API reports them per response. Input is every prompt token the model
+// read: uncached, read from the cache, and written to it. Each call re-reads the whole
+// conversation, so input grows much faster than output, and most of it comes from the cache.
+function emptyTokens() {
+  return { input: 0, cached: 0, output: 0, calls: 0 };
+}
+
+function tokensOfUsage(usage) {
+  if (!usage) return null;
+  const cached = usage.cache_read_input_tokens ?? 0;
+  const input = (usage.input_tokens ?? 0) + cached + (usage.cache_creation_input_tokens ?? 0);
+  return { input, cached, output: usage.output_tokens ?? 0, calls: 1 };
+}
+
+function addTokens(a = emptyTokens(), b) {
+  return { input: a.input + b.input, cached: a.cached + b.cached, output: a.output + b.output, calls: a.calls + b.calls };
+}
+
+// 820, 14.2k, 142k, 1.23M.
+export function countOf(n) {
+  if (n < 1000) return String(n);
+  if (n < 100_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+// Notes when each task starts and finishes. A reopened task loses its finish.
 function stampTasks(track) {
   const now = Date.now();
   const tasks = track.tasks.map((t) => {
@@ -368,6 +571,152 @@ function stampTasks(track) {
     return t;
   });
   return tasks.every((t, i) => t === track.tasks[i]) ? track : { ...track, tasks };
+}
+
+// ---- the session log (Progress pane) ----
+
+function emptyLog() {
+  return { blocks: [], findings: [] };
+}
+
+function capped(list) {
+  return list.slice(-LOG_CAP);
+}
+
+// Unqueued: for use inside a queued job. Everything else goes through changeLog.
+async function writeLog($, change) {
+  const { value: log = emptyLog() } = await $.state.get(LOG);
+  const changed = change(log);
+  if (changed !== log) await $.state.set(LOG, changed);
+}
+
+function changeLog($, change) {
+  queue = queue.then(() => writeLog($, change)).catch(() => undefined);
+  return queue;
+}
+
+async function currentTaskOf($) {
+  const { value: tracks = [] } = await $.state.get(TRACKS);
+  const active = activeOf(tracks);
+  return active?.isAutoSteps ? null : (active?.tasks.find((t) => t.status === "in_progress")?.subject ?? null);
+}
+
+// Something waits on the person: the bar turns amber and the pane lists it. A plan
+// approval keeps its own Planning bar; a fallback adds nothing when one is already open.
+async function openBlock($, kind, text, { isFallback = false, keepsBar = false, toolUseId = null, details = null } = {}) {
+  const task = await currentTaskOf($);
+  if (!keepsBar) {
+    await update($, (tracks) => {
+      const active = activeOf(tracks);
+      return active && !isComplete(active) && !active.isWaiting ? replace(tracks, { ...active, isWaiting: true }) : tracks;
+    });
+  }
+  await changeLog($, (log) => {
+    if (isFallback && log.blocks.some((b) => b.kind === kind && b.answeredAt == null)) return log;
+    const block = { id: entryId(kind, log.blocks.length), kind, text: shorten(text, 120), task, at: Date.now(), answeredAt: null, toolUseId, details };
+    return { ...log, blocks: capped([...log.blocks, block]) };
+  });
+}
+
+// Adds what happened to the newest block that matches: the answer, how the call ended.
+function noteBlock($, isTarget, fields) {
+  return changeLog($, (log) => {
+    const at = log.blocks.findLastIndex(isTarget);
+    if (at === -1) return log;
+    return { ...log, blocks: log.blocks.map((b, i) => (i === at ? { ...b, ...fields } : b)) };
+  });
+}
+
+// How a call ended, as its result says. A refusal is not said to be the person's: a hook
+// or a rule can refuse a call too.
+function outcomeOf(r) {
+  if (r.deny !== undefined) return "It did not run";
+  return r.isError ? "It ran and ended with an error" : "It ran";
+}
+
+// What a permission prompt asked to do, in full: the command, else the file, else the input.
+function requestOf(tool, input) {
+  if (input.command) return String(input.command);
+  if (input.file_path || input.notebook_path) return String(input.file_path ?? input.notebook_path);
+  if (input.url) return String(input.url);
+  const text = JSON.stringify(input);
+  return text === "{}" ? String(tool ?? "") : shorten(text, 400);
+}
+
+// A log entry's id: stable while the entry lives, so its details stay open across renders.
+function entryId(kind, n) {
+  return `${kind}-${Date.now().toString(36)}-${n}`;
+}
+
+// A permission prompt learns which call it belonged to when that call ends.
+async function closeBlocks($, toolUseId = null) {
+  await changeLog($, (log) => {
+    if (!log.blocks.some((b) => b.answeredAt == null)) return log;
+    const now = Date.now();
+    const close = (b) => ({ ...b, answeredAt: now, toolUseId: b.toolUseId ?? toolUseId });
+    return { ...log, blocks: log.blocks.map((b) => (b.answeredAt == null ? close(b) : b)) };
+  });
+  await update($, (tracks) => {
+    const active = activeOf(tracks);
+    return active?.isWaiting && !active.isPlanning ? replace(tracks, { ...active, isWaiting: false }) : tracks;
+  });
+}
+
+async function logFinding($, kind, text, toolUseId = null) {
+  const task = await currentTaskOf($);
+  await changeLog($, (log) => ({
+    ...log,
+    findings: capped([...log.findings, { id: entryId(kind, log.findings.length), kind, text: shorten(text, 1000), task, at: Date.now(), toolUseId }]),
+  }));
+}
+
+async function openPane($) {
+  try {
+    const opened = await $.ui.open({ id: PANE, title: "Progress" });
+    if (!opened.isPlaced) $.ui.toast(`Progress pane waits: ${opened.reason ?? "this window shows no panes"}`);
+  } catch {
+    // No panes on this surface.
+  }
+}
+
+// Each new failing run counts against the task in progress; the first of a red spell
+// also goes to the Found tab.
+function stampFailure(old, track) {
+  if (!track.failedRuns || track.failedRuns === old?.failedRuns) return track;
+  const at = track.tasks.findIndex((t) => t.status === "in_progress");
+  if (at === -1) return track;
+  const tasks = track.tasks.map((t, i) => (i === at ? { ...t, failures: (t.failures ?? 0) + 1 } : t));
+  const isNewSpell = old?.failedCommand == null;
+  return {
+    ...track,
+    tasks,
+    failureToLog: isNewSpell
+      ? {
+          text: track.failedReason ?? track.failedCommand,
+          task: tasks[at].subject,
+          toolUseId: track.failedToolUseId ?? null,
+          command: track.failedCommand,
+          lines: track.failedLines ?? [],
+        }
+      : null,
+  };
+}
+
+// A toast when a bar starts waiting on the person, and when a real task list finishes.
+function notify($, old, track) {
+  try {
+    if (track.isWaiting && !old?.isWaiting && !track.isPlanning) {
+      $.ui.toast(`Waiting for you · ${track.label ?? track.tasks[0]?.subject ?? "Claude"}`);
+    }
+    const isAuto = track.isWorkBar || track.isPlanning || track.isAutoSteps;
+    if (track.doneAt != null && old?.doneAt == null && old !== undefined && !isAuto) {
+      const retries = track.tasks.reduce((sum, t) => sum + (t.failures ?? 0), 0);
+      const time = track.startedAt ? ` in ${durationOf(track.doneAt - track.startedAt)}` : "";
+      $.ui.toast(`✓ ${track.label ?? track.tasks[0]?.subject ?? "Tasks"} done${time}${retries ? ` · ${retries} ${retries === 1 ? "retry" : "retries"}` : ""}`);
+    }
+  } catch {
+    // No toasts on this surface.
+  }
 }
 
 // Notes when a track finishes (to freeze its clock) and hides it a minute later.
@@ -431,18 +780,58 @@ function withActive(tracks, change, incoming) {
 // reads in parallel, a sub-agent, a failing check that recovers, time left, and the
 // finished timeline opened on its own. The track goes away a while after it finishes.
 const DEMO_TASKS = ["Plan", "Read config.ts", "Read api.ts", "Read db.ts", "Build", "Test", "Ship"];
+// Each step: [delay, change to the demo track, change to the pane's log]. Demo log
+// entries carry isDemo and go when the demo does.
 const DEMO_STEPS = [
   [1400, (t) => applyOps(t, { next: true })],
   [1600, demoParallelReads],
-  [700, (t) => ({ ...t, demoAgents: 1 })],
+  [700, (t) => ({ ...t, demoAgents: 1, isExpanded: true })],
   [1600, demoAgentDone],
   [600, (t) => applyOps(t, { next: true })],
   [1200, (t) => applyOps(t, { failed: "2 tests failing" })],
-  [2200, (t) => applyOps(t, { fixed: true })],
+  [1300, (t) => applyOps(t, { failed: "1 test failing" }), demoFinding("Retry loop in api.ts drops the auth header", "Test")],
+  [1600, (t) => applyOps(t, { fixed: true })],
+  [500, (t) => ({ ...t, isWaiting: true }), demoBlock("Allow npm publish", "Ship")],
+  [1800, (t) => ({ ...t, isWaiting: false }), demoAnswer],
   [900, (t) => applyOps(t, { next: true })],
-  [1400, (t) => ({ ...applyOps(t, { next: true }), isExpanded: true })],
+  [1400, (t) => applyOps(t, { next: true })],
 ];
 const DEMO_LINGER_MS = 12000;
+
+function demoFinding(text, task) {
+  return (log) => ({ ...log, findings: [...log.findings, { id: entryId("found", log.findings.length), kind: "found", text, task, at: Date.now(), isDemo: true }] });
+}
+
+function demoBlock(text, task) {
+  return (log) => ({
+    ...log,
+    blocks: [
+      ...log.blocks,
+      {
+        id: entryId("permission", log.blocks.length),
+        kind: "permission",
+        text,
+        task,
+        at: Date.now(),
+        answeredAt: null,
+        isDemo: true,
+        details: { tool: "Bash", request: text.replace(/^Allow /, "") },
+      },
+    ],
+  });
+}
+
+function demoAnswer(log) {
+  return {
+    ...log,
+    blocks: log.blocks.map((b) => (b.isDemo && b.answeredAt == null ? { ...b, answeredAt: Date.now(), outcome: "It ran" } : b)),
+  };
+}
+
+function dropDemoLog(log) {
+  const keep = (list) => list.filter((entry) => !entry.isDemo);
+  return { blocks: keep(log.blocks), findings: keep(log.findings) };
+}
 
 async function playDemo($) {
   let id = null;
@@ -457,12 +846,19 @@ async function playDemo($) {
     return [...tracks, { ...track, tasks, isDemo: true }];
   });
   const onDemo = (change) => update($, (tracks) => tracks.map((t) => (t.id === id ? change(t) : t)));
+  await openPane($);
   let at = 0;
-  for (const [delay, change] of DEMO_STEPS) {
+  for (const [delay, change, logChange] of DEMO_STEPS) {
     at += delay;
-    $.clock.after(at, () => void onDemo(change));
+    $.clock.after(at, () => {
+      void onDemo(change);
+      if (logChange) void changeLog($, logChange);
+    });
   }
-  $.clock.after(at + DEMO_LINGER_MS, () => void update($, (tracks) => tracks.filter((t) => t.id !== id)));
+  $.clock.after(at + DEMO_LINGER_MS, () => {
+    void update($, (tracks) => tracks.filter((t) => t.id !== id));
+    void changeLog($, dropDemoLog);
+  });
 }
 
 // The three reads all start when Plan finishes and end at different times.
@@ -535,7 +931,7 @@ async function startPlanning($) {
       { id: "plan1", subject: "Explore", status: "in_progress" },
       { id: "approval", subject: "Approval", status: "pending" },
     ];
-    return [...tracks, { ...newTrack(tracks, "Planning"), tasks, isPlanning: true, isAutoSteps: true }];
+    return [...tracks, { ...newTrack(tracks, "Planning"), tasks, isPlanning: true, isAutoSteps: true, isCounter: true }];
   });
 }
 
@@ -585,18 +981,27 @@ async function noteAgentRun($, step) {
   });
 }
 
+// The note Claude gets when a turn's work starts without a list: the bar can only count
+// steps until Claude says how many there are.
+const LIST_NUDGE = `This work has no task list yet, so the progress bar can only count steps. If more steps are coming, call ${TOOL} now with {title, tasks:[every step you plan]} so the bar shows a real total. Don't mention this note.`;
+
+// Returns the note for Claude when this call starts a Working bar.
 async function autoWork($, step) {
-  if (lastMode === "plan") return;
+  if (lastMode === "plan") return null;
   turnSteps.push(step);
+  let nudge = null;
   await update($, (tracks) => {
     const active = activeOf(tracks);
     if (active?.isWorkBar && active.isAutoSteps) return replace(tracks, autoStep(active, step));
     if (hasTurnBar || turnSteps.length < AUTO_BAR_CALLS || (active && !isComplete(active))) return tracks;
     hasTurnBar = true;
+    nudge = LIST_NUDGE;
     const done = turnSteps.map((s, i) => ({ id: `plan${i + 1}`, ...taskOf(s), status: "completed" }));
     const tasks = [...done, { id: `plan${done.length + 1}`, subject: "Working", status: "in_progress" }];
-    return [...tracks, { ...newTrack(tracks, "Working"), tasks, isWorkBar: true, isAutoSteps: true }];
+    const track = { ...newTrack(tracks, "Working"), startedAt: turnSteps[0].startedAt, tokens: turnTokens };
+    return [...tracks, { ...track, tasks, isWorkBar: true, isAutoSteps: true, isCounter: true }];
   });
+  return nudge;
 }
 
 export function stepNameOf(call) {
@@ -680,9 +1085,21 @@ function applyOps(track, ops) {
       );
     }
   }
-  if (typeof ops.failed === "string") failedCommand = ops.failed || "failed";
+  let failedRuns = track.failedRuns;
+  if (typeof ops.failed === "string") {
+    failedCommand = ops.failed || "failed";
+    failedRuns = (failedRuns ?? 0) + 1;
+  }
   if (ops.fixed === true) failedCommand = null;
-  return { ...track, tasks, failedCommand, failedReason: failedCommand === track.failedCommand ? track.failedReason : null };
+  const isSameFailure = failedCommand === track.failedCommand;
+  return {
+    ...track,
+    tasks,
+    failedCommand,
+    failedRuns,
+    failedReason: isSameFailure ? track.failedReason : null,
+    failedLines: isSameFailure ? track.failedLines : null,
+  };
 }
 
 // Exact name first, then a prefix, then a part of the name; -1 when none fits.
@@ -727,6 +1144,17 @@ function isCheckWords([first = "", ...rest]) {
   if (head === "dotnet" || head === "swift") return /^(test|build)$/.test(a);
   if (head === "claude") return a === "plugin" && /^(test|validate)$/.test(b);
   return false;
+}
+
+const ERROR_LINE = /\b(error|errors|failed|failure|FAIL|assert\w*)\b|✕/i;
+
+// Up to 8 lines of a failed check's output for the pane: the lines that name a problem,
+// else the last lines of the output.
+function errorLinesOf(result) {
+  const text = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`;
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const hits = lines.filter((l) => ERROR_LINE.test(l));
+  return (hits.length > 0 ? hits.slice(0, 8) : lines.slice(-8)).map((l) => shorten(l, 200));
 }
 
 // The first line of a failed check's output that names the problem.
@@ -774,51 +1202,79 @@ function agentsOf(count = 0) {
   return count === 0 ? "" : ` · ${count} agent${count === 1 ? "" : "s"}`;
 }
 
-function rowOf(track, columns) {
+// What a row shows. Only measured numbers: x/y and the percent only for a list Claude
+// declared (an automatic bar counts steps, its total unknown); time worked and waited;
+// the tokens the API reported while it ran; the context fill once it is high.
+function rowOf(track, columns, ctx = {}) {
+  const now = ctx.now ?? Date.now();
   const total = track.tasks.length;
   const done = track.tasks.filter((t) => t.status === "completed").length;
   const current =
     track.tasks.find((t) => t.status === "in_progress") ?? track.tasks.find((t) => t.status !== "completed");
   const isDone = done === total;
+  const isCounter = track.isCounter === true;
   const status = isDone ? "done" : track.isWaiting ? "waiting" : track.failedCommand !== null ? "failed" : "working";
   const step = isDone ? total : Math.min(total, done + 1);
+  const where = isCounter ? ` · ${done} ${done === 1 ? "step" : "steps"}` : ` ${step}/${total}`;
+  const tries = (current?.failures ?? 0) >= 2 ? ` ×${current.failures}` : "";
   const pill =
     status === "waiting"
       ? track.isPlanning ? "Waiting for approval" : "Waiting for you"
       : status === "failed"
-        ? `✕ ${shorten(current?.subject ?? "Failed", 18)} ${step}/${total}`
-        : track.isPlanning
-          ? `${current?.subject ?? "Planning"} ${step}/${total}`
-          : isDone
-            ? `✓ Done ${step}/${total}`
-            : `${shorten(current?.subject ?? "Tasks", 18)} ${step}/${total}${agentsOf(track.agents)}`;
-  const eta = status === "working" ? timeLeftOf(track.tasks) : "";
+        ? `✕ ${shorten(current?.subject ?? "Failed", 18)}${where}${tries}`
+        : isDone
+          ? `✓ Done${where}`
+          : `${shorten(current?.subject ?? "Tasks", 18)}${where}${agentsOf(track.agents)}`;
+  const percent = isCounter ? null : Math.round((done / total) * 100);
+  const workMs = workOf(track, now, ctx.turnStartedAt ?? null);
+  const waitMs = waitOf(track, now);
+  const tokens = track.tokens?.calls ? track.tokens : null;
+  const stats = [
+    percent != null ? `${percent}%` : null,
+    `${durationOf(workMs)} work`,
+    waitMs >= 1000 ? `${durationOf(waitMs)} wait` : null,
+    tokens ? `${countOf(tokens.input)} in · ${countOf(tokens.output)} out` : null,
+    (ctx.contextPercent ?? 0) >= 80 ? `context ${ctx.contextPercent}%` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const skipped = track.tasks.flatMap((t, i) => (t.isSkipped ? [i] : []));
   const labelColumns = Math.max(12, Math.min(32, Math.floor(columns * 0.28)));
-  const width = columns - labelColumns - 2 - 2 - 4 - 7 - 2 - 1 - 2 - (eta ? eta.length + 1 : 0);
+  // dot 2, gap 2, stats + 4, buttons 5
+  const width = columns - labelColumns - 13 - stats.length;
   const hasRoom = width >= Math.max(MIN_BAR_COLUMNS, pill.length + 6);
+  // An automatic bar has no total: its bar is full and moving, with no ticks.
+  const barDone = isCounter ? 1 : done;
+  const barTotal = isCounter ? 1 : total;
+  const taskMs = current?.status === "in_progress" && current.startedAt != null ? now - current.startedAt : null;
   return {
     id: track.id,
     label: track.label ?? track.tasks[0].subject,
     labelColumns,
     status,
     pill,
-    percent: Math.round((done / total) * 100),
+    percent,
+    isCounter,
     done,
     total,
+    barDone,
+    barTotal,
+    stats,
+    workMs,
+    waitMs,
+    tokens,
+    taskMs,
     isDemo: track.isDemo === true,
     isExpanded: track.isExpanded === true,
     tasks: track.tasks,
     track,
-    elapsed: track.startedAt ? durationOf((track.doneAt ?? Date.now()) - track.startedAt) : "",
-    eta,
     reason: track.failedCommand ? shorten(track.failedReason ?? track.failedCommand, 60) : null,
     skipped,
-    bar: hasRoom ? { key: `bar:${track.id}`, width, done, total, status, pill, skipped } : null,
+    bar: hasRoom ? { key: `bar:${track.id}`, width, done: barDone, total: barTotal, status, pill, skipped: isCounter ? [] : skipped } : null,
   };
 }
 
-function draw({ Box, Text, Button, Raster }, row, onDismiss) {
+function draw({ Box, Text, Button, Raster }, row, actions, lines) {
   const isFailed = row.status === "failed";
   const pill = PILL[row.status];
   const middle = row.bar
@@ -831,24 +1287,47 @@ function draw({ Box, Text, Button, Raster }, row, onDismiss) {
           Text({ color: pill.bg, children: "▌" }),
         ],
       });
-  return Box({
-    key: row.id,
+  const line = Box({
     flexDirection: "row",
     children: [
       Text({ color: DOT[row.status], bold: isFailed, children: isFailed ? "! " : "● " }),
       Box({ width: row.labelColumns, children: [Text({ wrap: "truncate-end", children: row.label })] }),
       Text({ children: "  " }),
       middle,
-      Text({ dimColor: true, children: `  ${String(row.percent).padStart(3)}%${row.elapsed ? ` ${row.elapsed.padStart(6)}` : ""}${row.eta ? ` ${row.eta}` : ""}  ` }),
-      Button({ key: `dismiss:${row.id}`, label: "✕", plain: true, dimColor: true, onPress: onDismiss }),
+      Text({ dimColor: true, children: `  ${row.stats}  ` }),
+      Button({ key: `expand:${row.id}`, label: row.isExpanded ? "▾" : "▸", plain: true, dimColor: true, onPress: actions.toggle(row.id) }),
+      Text({ children: " " }),
+      Button({ key: `pane:${row.id}`, label: "☰", plain: true, dimColor: true, onPress: actions.pane }),
+      Text({ children: " " }),
+      Button({ key: `dismiss:${row.id}`, label: "✕", plain: true, dimColor: true, onPress: actions.dismiss(row.id) }),
     ],
+  });
+  if (!row.isExpanded || lines === 0) return Box({ key: row.id, children: [line] });
+  const all = taskLinesOf(row.track);
+  const shown = all.length <= lines ? all : [...all.slice(0, lines - 1), { text: `+${all.length - lines + 1} more`, isDim: true }];
+  return Box({
+    key: row.id,
+    flexDirection: "column",
+    children: [line, ...shown.map((l, i) => Text({ key: `${row.id}:${i}`, dimColor: l.isDim, children: `    ${l.text}` }))],
+  });
+}
+
+// One line per task for an expanded terminal row: ✓ Build 1.2s, ▸ Test 40s ×2, ○ Ship.
+function taskLinesOf(track) {
+  const now = Date.now();
+  return track.tasks.map((t) => {
+    const mark = t.isSkipped ? "–" : t.status === "completed" ? "✓" : t.status === "in_progress" ? "▸" : "○";
+    const end = t.status === "completed" ? t.doneAt : t.status === "in_progress" ? now : null;
+    const time = t.startedAt != null && end != null ? `  ${timeOf(end - t.startedAt)}` : "";
+    const tries = t.failures ? ` ×${t.failures}` : "";
+    return { text: `${mark} ${t.subject}${time}${tries}`, isDim: t.status !== "in_progress" };
   });
 }
 
 // The desktop band: every bar the same width, pinned right so rows line up.
 // The desktop reports about 8 CSS px per column.
-function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle) {
-  const rows = tracks.map((t) => rowOf(t, 200));
+function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggle, pane }, ctx) {
+  const rows = tracks.map((t) => rowOf(t, 200, ctx));
   const total = Math.max(320, (props.bodyColumns || 100) * 8);
   const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...rows.map((r) => r.label.length * 6.4)));
   const width = Math.max(140, Math.min(1400, Math.round(total - titleWidth - 210)));
@@ -859,14 +1338,13 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
       const isMoving = ((props.isWorking || r.isDemo) && isLive(r.status)) || r.status === "done";
       const bar = Svg
         ? Svg({
-            source: barSvg({ width, done: r.done, total: r.total, status: r.status, pill: r.pill, isMoving, skipped: r.skipped }),
-            alt: `${r.label}: ${r.pill}, ${r.percent}%${r.reason ? ` (${r.reason})` : ""}`,
+            source: barSvg({ width, done: r.barDone, total: r.barTotal, status: r.status, pill: r.pill, isMoving, skipped: r.isCounter ? [] : r.skipped }),
+            alt: `${r.label}: ${r.pill}, ${r.stats}${r.reason ? ` (${r.reason})` : ""}`,
             width,
             height: SVG_HEIGHT,
             isInteractive: isMoving || undefined,
           })
         : Text({ color: PILL[r.status].bg, children: r.pill });
-      const isDone = r.status === "done";
       const line = Box({
         flexDirection: "row",
         alignItems: "center",
@@ -878,15 +1356,14 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
           bar,
           Box({
             flexShrink: 0,
-            children: [Text({ dimColor: true, wrap: "truncate", children: `${String(r.percent).padStart(3, " ")}%${r.elapsed ? ` ${r.elapsed}` : ""}${r.eta ? ` · ${r.eta}` : ""}` })],
+            children: [Text({ dimColor: true, wrap: "truncate", children: r.stats })],
           }),
-          isDone
-            ? Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▼ Tasks" : "▶ Tasks", plain: true, onPress: toggle(r.id) })
-            : null,
+          Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▼ Tasks" : "▶ Tasks", plain: true, onPress: toggle(r.id) }),
+          Button({ key: `pane:${r.id}`, label: "☰", plain: true, dimColor: true, onPress: pane }),
           Button({ key: `dismiss:${r.id}`, label: "✕", plain: true, dimColor: true, onPress: dismiss(r.id) }),
         ].filter(Boolean),
       });
-      if (!(isDone && r.isExpanded)) return Box({ key: r.id, children: [line] });
+      if (!r.isExpanded) return Box({ key: r.id, children: [line] });
       return Box({
         key: r.id,
         flexDirection: "column",
@@ -908,7 +1385,7 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, dismiss, toggle)
                       isInteractive: true,
                     })
                   : Text({ color: entry.isAgent ? DOT.working : DOT.done, children: entry.pos === "main" ? " ●" : " ┆●" }),
-                Text({ wrap: "truncate", dimColor: entry.isSkipped, children: entry.subject }),
+                Text({ wrap: "truncate", dimColor: entry.isSkipped || entry.status === "pending", children: entry.subject }),
                 entry.note ? Text({ dimColor: true, wrap: "truncate", children: entry.note }) : null,
                 Box({ flexGrow: 1 }),
                 Text({ dimColor: true, children: entry.time }),
@@ -967,15 +1444,6 @@ function base64Of(bytes) {
   return out;
 }
 
-// "~3m left": the mean time of the timed, finished tasks times the tasks left; blank under two.
-export function timeLeftOf(tasks) {
-  const timed = tasks.filter((t) => t.status === "completed" && !t.isSkipped && t.startedAt != null && t.doneAt != null);
-  const left = tasks.filter((t) => t.status !== "completed").length;
-  if (timed.length < 2 || left === 0) return "";
-  const mean = timed.reduce((sum, t) => sum + (t.doneAt - t.startedAt), 0) / timed.length;
-  return `~${durationOf(mean * left).split(" ")[0]} left`;
-}
-
 // 45s, 2m 14s, 1h 05m.
 // The finished list as timeline rows: each task, then the sub-agents it ran on a branch.
 // Steps whose run times overlap ran in parallel and share a branch too.
@@ -1011,15 +1479,25 @@ function timelineOf(track) {
 function entryOf(item) {
   const agent = item.agent;
   const isTimed = item.startedAt != null && item.doneAt != null;
+  const isRunning = item.status === "in_progress" && item.startedAt != null;
+  const notes = agent ? [`${agent.type} agent`] : [];
+  if (item.failures) notes.push(`failed ×${item.failures}`);
   return {
     subject: item.subject,
+    status: item.status,
     startedAt: item.startedAt,
     doneAt: item.doneAt,
     pos: "main",
     isAgent: agent !== undefined,
     isSkipped: item.isSkipped === true,
-    notes: agent ? [`${agent.type} agent`] : [],
-    time: agent?.isBackground ? "background" : isTimed ? timeOf(item.doneAt - item.startedAt) : "—",
+    notes,
+    time: agent?.isBackground
+      ? "background"
+      : isTimed
+        ? timeOf(item.doneAt - item.startedAt)
+        : isRunning
+          ? `${timeOf(Date.now() - item.startedAt)} so far`
+          : "—",
   };
 }
 
@@ -1037,4 +1515,283 @@ function durationOf(ms) {
 
 function shorten(text, max) {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+// ---- the Progress pane ----
+
+
+// Header (the current list), a strip of tab chips with counts, then the tab's entries:
+// open items as bordered cards, older ones as quiet rows. Pressing an entry's title opens
+// its details under it.
+function drawPane(ui, { log, tab, track, ctx }, select) {
+  const { Box } = ui;
+  const counts = {
+    blocked: log.blocks.filter((b) => b.answeredAt == null).length,
+    found: log.findings.length,
+  };
+  const body = tab === "found" ? foundOf(ui, log) : blockedOf(ui, log);
+  return Box({
+    flexDirection: "column",
+    paddingX: 1,
+    children: [
+      headerOf(ui, track, ctx),
+      Box({ flexDirection: "row", gap: 1, marginTop: 1, marginBottom: 1, children: TABS.map((t) => tabChipOf(ui, t, t.id === tab, counts[t.id], select)) }),
+      ...(body.length > 0 ? body : [emptyOf(ui, tab)]),
+    ],
+  });
+}
+
+// The current list, then one line of measured numbers: this task's time, work, wait,
+// the list's tokens, and the session's context fill.
+function headerOf({ Box, Text }, track, ctx = {}) {
+  const context = ctx.contextPercent != null ? `context ${ctx.contextPercent}%` : null;
+  if (!track) {
+    return Text({ dimColor: true, children: ["No task list running.", context].filter(Boolean).join(" · ") });
+  }
+  const row = rowOf(track, 200, ctx);
+  const pill = PILL[row.status];
+  const facts = [
+    row.percent != null ? `${row.percent}% done` : `${row.done} ${row.done === 1 ? "step" : "steps"}, total unknown`,
+    row.taskMs != null ? `this task ${durationOf(row.taskMs)}` : null,
+    `worked ${durationOf(row.workMs)}`,
+    row.waitMs >= 1000 ? `waited on you ${durationOf(row.waitMs)}` : null,
+    row.tokens
+      ? `${countOf(row.tokens.input)} tokens in (${Math.round((row.tokens.cached / Math.max(1, row.tokens.input)) * 100)}% cached) · ${countOf(row.tokens.output)} out · ${row.tokens.calls} ${row.tokens.calls === 1 ? "call" : "calls"}`
+      : null,
+    context,
+  ].filter(Boolean);
+  return Box({
+    flexDirection: "column",
+    children: [
+      Box({
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 1,
+        children: [
+          Text({ color: DOT[row.status], children: row.status === "failed" ? "!" : "●" }),
+          Text({ bold: true, wrap: "truncate", children: row.label }),
+          Box({ flexGrow: 1 }),
+          Text({ color: pill.fg, backgroundColor: pill.bg, bold: true, children: ` ${row.pill} ` }),
+        ],
+      }),
+      Text({ dimColor: true, wrap: "truncate", children: facts.join(" · ") }),
+    ],
+  });
+}
+
+// Each tab is the surface's own button, so its border, hover and focus cover the whole tab.
+// A bordered Box around a Button pads it, and the hover highlight never reaches the border.
+function tabChipOf({ Button }, t, isSelected, count, select) {
+  return Button({
+    key: `tab:${t.id}`,
+    label: `${t.label}  ${count}`,
+    hotkey: t.hotkey,
+    variant: isSelected ? "primary" : "secondary",
+    dimColor: !isSelected,
+    onPress: select(t.id),
+  });
+}
+
+// An entry's title: a button that opens or closes its details.
+function titleOf({ Button, openId, toggle }, id, text, { isDim = false } = {}) {
+  const isOpen = openId === id;
+  return Button({
+    key: `more:${id}`,
+    label: `${isOpen ? "▾" : "▸"} ${shorten(text, 90)}`,
+    plain: true,
+    dimColor: isDim && !isOpen,
+    hover: { underline: true },
+    onPress: toggle(id),
+  });
+}
+
+// The open entry's details: one row per fact, label on the left; output lines indented.
+function detailsOf({ Box, Text }, id, rows) {
+  return Box({
+    key: `details:${id}`,
+    flexDirection: "column",
+    marginTop: 1,
+    marginLeft: 2,
+    children: rows.map((row, i) =>
+      row.isOutput
+        ? Text({ key: `${id}:${i}`, wrap: "truncate", children: `│ ${row.value}` })
+        : Box({
+            key: `${id}:${i}`,
+            flexDirection: "row",
+            gap: 1,
+            children: [
+              Box({ width: 12, flexShrink: 0, children: [Text({ dimColor: true, children: row.label })] }),
+              Text({ wrap: "wrap", children: row.value }),
+            ],
+          }),
+    ),
+  });
+}
+
+// What an entry's details say, from what the log recorded. Older entries may lack some.
+function detailRowsOf(entry) {
+  const rows = [];
+  const add = (label, value) => value != null && value !== "" && rows.push({ label, value: String(value) });
+  const d = entry.details ?? {};
+  if (entry.kind === "question") {
+    for (const q of d.questions ?? [{ question: entry.text, options: [] }]) {
+      add("Question", q.question);
+      if (q.options?.length) add("Options", q.options.join(" · "));
+      add("Your answer", entry.answers?.[q.question] ?? (entry.answeredAt == null ? "Waiting for you" : "Not recorded"));
+    }
+  } else if (entry.kind === "permission") {
+    add("Tool", d.tool);
+    add("Asked to", d.request ?? entry.text);
+    add("Result", entry.outcome ?? (entry.answeredAt == null ? "Waiting for you" : null));
+  } else if (entry.kind === "approval") {
+    add("Plan", d.plan);
+    if (d.steps) add("Steps", d.steps);
+    add("Answer", entry.outcome ?? (entry.answeredAt == null ? "Waiting for you" : null));
+  } else if (entry.kind === "failed") {
+    add("Check", entry.command ?? entry.text);
+    for (const line of entry.lines ?? []) rows.push({ isOutput: true, value: line });
+  } else {
+    add("Finding", entry.text);
+  }
+  add("Task", entry.task);
+  if (entry.answeredAt != null) add("Waited", durationOf(entry.answeredAt - entry.at));
+  add("At", clockOf(entry.at));
+  return rows;
+}
+
+// Old entries saved before ids existed get one from their kind and time.
+function idOf(entry) {
+  return entry.id ?? `${entry.kind}-${entry.at}`;
+}
+
+// A card: coloured border, a bold first line with the time on the right, a quiet second line.
+function cardOf(ui, key, { mark, color, title, time, detail, entry }) {
+  const { Box, Text } = ui;
+  const id = idOf(entry);
+  return Box({
+    key,
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: color,
+    paddingX: 1,
+    marginTop: 1,
+    children: [
+      Box({
+        flexDirection: "row",
+        gap: 1,
+        children: [
+          Text({ color, bold: true, children: mark }),
+          titleOf(ui, id, title),
+          Box({ flexGrow: 1 }),
+          Text({ dimColor: true, children: time }),
+        ],
+      }),
+      detail ? Text({ dimColor: true, wrap: "truncate", children: `  ${detail}` }) : null,
+      ui.openId === id ? detailsOf(ui, id, detailRowsOf(entry)) : null,
+    ].filter(Boolean),
+  });
+}
+
+// A quiet row for answered, older or plain entries.
+function lineOf(ui, key, { mark, color, title, note, time, isDim, entry }) {
+  const { Box, Text } = ui;
+  const id = idOf(entry);
+  const line = Box({
+    flexDirection: "row",
+    gap: 1,
+    paddingX: 1,
+    children: [
+      Text({ color, dimColor: isDim, children: mark }),
+      titleOf(ui, id, title, { isDim }),
+      note ? Text({ dimColor: true, wrap: "truncate", children: note }) : null,
+      Box({ flexGrow: 1 }),
+      Text({ dimColor: true, children: time }),
+    ].filter(Boolean),
+  });
+  if (ui.openId !== id) return Box({ key, children: [line] });
+  return Box({ key, flexDirection: "column", marginBottom: 1, children: [line, detailsOf(ui, id, detailRowsOf(entry))] });
+}
+
+function sectionOf({ Text }, key, title) {
+  return Text({ key, dimColor: true, bold: true, children: title });
+}
+
+const BLOCK_KIND = { permission: "Permission", question: "Question", approval: "Plan approval" };
+
+// Waiting now as cards, then the answered ones as quiet rows; newest first.
+function blockedOf(ui, log) {
+  const open = log.blocks.filter((b) => b.answeredAt == null).reverse();
+  const answered = log.blocks.filter((b) => b.answeredAt != null).reverse();
+  const now = Date.now();
+  const out = [];
+  if (open.length > 0) {
+    out.push(sectionOf(ui, "s:open", "WAITING NOW"));
+    open.forEach((b, i) =>
+      out.push(
+        cardOf(ui, `open:${i}`, {
+          mark: "●",
+          color: DOT.waiting,
+          title: b.text,
+          time: clockOf(b.at),
+          entry: b,
+          detail: [BLOCK_KIND[b.kind], b.task, `waiting ${durationOf(now - b.at)}`].filter(Boolean).join(" · "),
+        }),
+      ),
+    );
+  }
+  if (answered.length > 0) {
+    out.push(sectionOf(ui, "s:answered", open.length > 0 ? " ANSWERED" : "ANSWERED"));
+    answered.forEach((b, i) =>
+      out.push(
+        lineOf(ui, `done:${i}`, {
+          mark: "✓",
+          color: DOT.done,
+          title: b.text,
+          note: `· waited ${durationOf(b.answeredAt - b.at)}${b.task ? ` · ${b.task}` : ""}`,
+          time: clockOf(b.at),
+          isDim: true,
+          entry: b,
+        }),
+      ),
+    );
+  }
+  return out;
+}
+
+// Newest first, each as a card: red for a failing check, purple for a finding.
+function foundOf(ui, log) {
+  return [...log.findings].reverse().map((f, i) =>
+    cardOf(ui, `found:${i}`, {
+      mark: f.kind === "failed" ? "✕" : "◆",
+      color: f.kind === "failed" ? DOT.failed : DOT.working,
+      title: f.text,
+      time: clockOf(f.at),
+      entry: f,
+      detail: [f.kind === "failed" ? "Check failed" : "Finding", f.task].filter(Boolean).join(" · "),
+    }),
+  );
+}
+
+const EMPTY = {
+  blocked: ["✓", DOT.done, "Nothing waits on you.", "Permission prompts, questions and plan approvals show up here."],
+  found: ["◆", DOT.working, "Nothing found yet.", "Failing checks and Claude's findings show up here."],
+};
+
+function emptyOf({ Box, Text }, tab) {
+  const [mark, color, title, hint] = EMPTY[tab] ?? EMPTY.blocked;
+  return Box({
+    key: "empty",
+    flexDirection: "column",
+    marginTop: 1,
+    paddingX: 1,
+    children: [
+      Box({ flexDirection: "row", gap: 1, children: [Text({ color, bold: true, children: mark }), Text({ bold: true, children: title })] }),
+      Text({ dimColor: true, children: `  ${hint}` }),
+    ],
+  });
+}
+
+function clockOf(at) {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }

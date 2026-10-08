@@ -35,32 +35,40 @@ The desktop app loads mods from the `CLAUDE_CODE_PLUGIN_DIRS` variable in the `e
 
 `/progress-tracker-demo` plays a 7-step job on its own row. The demo shows every feature in order:
 
-1. Three file reads run in parallel.
-2. A sub-agent runs, and the pill shows `· 1 agent`.
-3. The "Test" step fails, and the row turns red.
-4. The step recovers, and the bar finishes green.
-5. The task timeline opens on its own. The row clears about 12 seconds later.
+1. The Progress pane opens, and the row expands to list its tasks.
+2. Three file reads run in parallel.
+3. A sub-agent runs, and the pill shows `· 1 agent`.
+4. The "Test" step fails twice. The row turns red, the pill shows `×2`, and "Found" lists the failure and a finding.
+5. The step recovers. Then the row turns amber, and "Blocked on me" lists `Allow npm publish` until it is answered.
+6. The bar finishes green. The row and its pane entries clear about 12 seconds later.
 
 The demo bar moves even while Claude is idle.
 
 ## What the bar shows
 
-Each task list gets one row, and the mod shows at most 3 rows. A row has a label, the bar, a percent, the time since the list started, and buttons.
+Each task list gets one row, and the mod shows at most 3 rows. A row has a label, the bar, measured numbers, and buttons. The row shows only numbers the mod measures. It does not guess how much time is left.
 
 - The label is the approved plan's title, the title Claude gave the list, or the first task.
 - The pill on the bar names the current task and its step, for example `Write tests 3/5`.
-- The percent counts finished tasks.
-- After two tasks finish, the row also shows the time left, for example `~3m left`. The mod takes the mean time of the finished tasks and multiplies it by the number of tasks left.
-- `✕` hides the row. On a finished row, `▶ Tasks` opens the task timeline.
+- For a list Claude declared, the pill shows `3/5` and the row shows the percent of finished tasks.
+- For an automatic bar (Working or Planning), the total is not known. The pill counts steps, for example `Working · 12 steps`, and the bar is full and moving, with no percent.
+- `work` is the time Claude was busy on the list: time inside Claude's turns, less the time it waited for you. Idle time between your messages does not count.
+- `wait` is the time the row was amber, waiting for your answer or permission.
+- `1.2M in · 14k out` adds up the tokens that each model response reported while the list ran, sub-agents included. Input counts every prompt token the model read: uncached, read from the prompt cache, and written to it. Each call reads the whole conversation again, so input grows much faster than output, and most of it comes from the cache.
+- When the context window is 80% full or more, the row adds `context 85%`.
+- `▸` (terminal) or `▶ Tasks` (desktop) lists every task with its time, while the row runs or after it finishes.
+- `☰` opens the Progress pane. `✕` hides the row.
+- When a check fails more than once in a task, the pill counts the runs, for example `✕ Test 3/5 ×3`.
+- A toast tells you when a row starts to wait for you, and when a task list finishes, for example `✓ Fix login done in 12m · 2 retries`.
 
 The colour of a row tells you its state:
 
 | Colour | State | Pill text |
 | --- | --- | --- |
-| Purple | Claude is working | `Build 2/5` |
+| Purple | Claude is working | `Build 2/5` or `Working · 12 steps` |
 | Red | A check failed in the current step | `✕ Verify 1/2` |
 | Amber | Claude waits for you | `Waiting for you` or `Waiting for approval` |
-| Green | Every task is done | `✓ Done 5/5` |
+| Green | Every task is done | `✓ Done 5/5` or `✓ Done · 12 steps` |
 
 The bar moves while Claude works, on purple and red rows. It holds still while Claude waits for you. A finished green bar keeps a slow twinkle in the desktop app and holds still in the terminal. In the terminal, the mod draws the bar with block characters and repaints it about 15 times a second. In the desktop app, the bar is an SVG that animates itself.
 
@@ -88,6 +96,7 @@ The desktop app has no `TaskCreate` or `TodoWrite`, so the mod adds its own tool
 | `skip` | boolean | Closes the current task as not needed. Its part of the bar is drawn dimmer. |
 | `failed` | string | Turns the row red with this reason. |
 | `fixed` | boolean | Clears the red state. |
+| `found` | string | Adds a finding (a bug, root cause or decision) to the pane's "Found" tab. Works without a row. |
 
 The tool replies with the state of the row, for example `2/5, running, active "Write tests", next "Docs"`. If Claude names a task that does not exist, the tool refuses the call and lists the task names.
 
@@ -95,7 +104,9 @@ If Claude makes 12 tool calls without moving the bar, the mod adds one note to a
 
 ### The Working bar
 
-Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". When the turn ends, the open step becomes "Write reply", and the row turns green. If Claude sends its own list with `progress_tracker`, that list replaces the automatic steps.
+Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". When the turn ends, the open step becomes "Write reply", and the row turns green. If Claude sends its own list with `progress_tracker`, `TaskCreate` or `TodoWrite`, that list replaces the automatic steps, and the row shows a real total.
+
+On the 3rd tool call, Claude also gets a short note that only it reads: if more steps are coming, send the task list now. This way most work gets a real total early.
 
 ### Plan mode
 
@@ -103,10 +114,31 @@ In plan mode, a row named "Planning" appears. Each tool call becomes a finished 
 
 ### Waits, failures, and sub-agents
 
-- When Claude asks you a question with `AskUserQuestion`, the row turns amber until you answer.
+- When Claude asks you a question with `AskUserQuestion`, or a permission prompt waits for you, the row turns amber until you answer.
 - When a check command fails during a task, the row turns red and shows the first error line of the output. A check is a test, build, lint, or typecheck command. The command's first words decide: `pytest`, `tsc`, `ruff`, `make`, `npm test`, `cargo build`, `go test`, and `.venv/bin/pytest` all count. Commands such as `grep`, `go run`, `npm run dev`, and `test -f` do not count, even when they exit with code 1.
 - The row turns back from red when the same check passes, with any flags, or when a task changes state.
 - While sub-agents that Claude started in this conversation run, the pill shows how many, for example `Search 1/3 · 2 agents`. Agents from other places do not count.
+
+## The Progress pane
+
+Type `/progress` or press `☰` on a row. The top of the pane names the current list and its measured numbers: percent done (or steps, when the total is unknown), how long the current task has run, work time, wait time, the list's tokens (input with its cached share, output, and the number of model calls), and the context fill.
+
+The pane has two tabs; press `1` or `2` to switch. Press an entry's title (`▸`) to open its details under it, and press it again to close them:
+
+- A question: each question, its options, and the answer you gave.
+- A permission prompt: the tool, what it asked to do in full, and how the call ended (it ran, it ran and ended with an error, or it did not run).
+- A plan approval: the plan's title, its number of steps, and whether it was approved.
+- A failing check: the command and up to 8 output lines that name the problem.
+- A finding: the full text.
+
+Every entry also shows its task, how long it waited, and the time.
+
+| Tab | Shows |
+| --- | --- |
+| Blocked on me | Permission prompts, questions and plan approvals. Open ones come first; answered ones say how long they waited. |
+| Found | Findings Claude logged with `found`, and each failing check (once per red spell). |
+
+Each entry names the task that was running and the time. The pane keeps the last 50 entries of each kind.
 
 ## Read the task timeline
 
