@@ -874,8 +874,12 @@ describe("progress-tracker", () => {
     drawn = textOf(await $.ui.render(BAND));
     expect(drawn).toContain("context 85%");
     const pane = textOf(await $.ui.render(PANE));
-    expect(pane).toContain("30.0k tokens in (90% cached) · 3.6k out · 3 calls");
-    expect(pane).toContain("context 85%");
+    // The pane shows each number as a labelled tile.
+    expect(pane).toContain("TOKENS IN\n30.0k90% cached");
+    expect(pane).toContain("TOKENS OUT\n3.6k");
+    expect(pane).toContain("MODEL CALLS\n3");
+    expect(pane).toContain("CONTEXT\n85%");
+    expect(pane).toContain("PROGRESS\n0%0 of 2");
   });
 
   test("a finished task list says so in a toast", async ($, on) => {

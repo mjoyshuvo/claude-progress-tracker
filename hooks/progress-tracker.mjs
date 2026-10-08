@@ -1541,23 +1541,32 @@ function drawPane(ui, { log, tab, track, ctx }, select) {
   });
 }
 
-// The current list, then one line of measured numbers: this task's time, work, wait,
-// the list's tokens, and the session's context fill.
-function headerOf({ Box, Text }, track, ctx = {}) {
-  const context = ctx.contextPercent != null ? `context ${ctx.contextPercent}%` : null;
+// The current list, then its measured numbers as labelled tiles: progress, this task's
+// time, work, wait, the list's tokens, and the session's context fill.
+function headerOf(ui, track, ctx = {}) {
+  const { Box, Text } = ui;
+  const context = contextTileOf(ctx);
   if (!track) {
-    return Text({ dimColor: true, children: ["No task list running.", context].filter(Boolean).join(" · ") });
+    return Box({
+      flexDirection: "column",
+      children: [Text({ dimColor: true, children: "No task list running." }), context ? tilesOf(ui, [context]) : null].filter(Boolean),
+    });
   }
   const row = rowOf(track, 200, ctx);
   const pill = PILL[row.status];
-  const facts = [
-    row.percent != null ? `${row.percent}% done` : `${row.done} ${row.done === 1 ? "step" : "steps"}, total unknown`,
-    row.taskMs != null ? `this task ${durationOf(row.taskMs)}` : null,
-    `worked ${durationOf(row.workMs)}`,
-    row.waitMs >= 1000 ? `waited on you ${durationOf(row.waitMs)}` : null,
-    row.tokens
-      ? `${countOf(row.tokens.input)} tokens in (${Math.round((row.tokens.cached / Math.max(1, row.tokens.input)) * 100)}% cached) · ${countOf(row.tokens.output)} out · ${row.tokens.calls} ${row.tokens.calls === 1 ? "call" : "calls"}`
+  const tokens = row.tokens;
+  const tiles = [
+    row.percent != null
+      ? { label: "PROGRESS", value: `${row.percent}%`, note: `${row.done} of ${row.total}` }
+      : { label: "PROGRESS", value: `${row.done} ${row.done === 1 ? "step" : "steps"}`, note: "total unknown" },
+    row.taskMs != null ? { label: "THIS TASK", value: durationOf(row.taskMs) } : null,
+    { label: "WORKED", value: durationOf(row.workMs) },
+    { label: "WAITED ON YOU", value: row.waitMs >= 1000 ? durationOf(row.waitMs) : "none" },
+    tokens
+      ? { label: "TOKENS IN", value: countOf(tokens.input), note: `${Math.round((tokens.cached / Math.max(1, tokens.input)) * 100)}% cached` }
       : null,
+    tokens ? { label: "TOKENS OUT", value: countOf(tokens.output) } : null,
+    tokens ? { label: "MODEL CALLS", value: String(tokens.calls) } : null,
     context,
   ].filter(Boolean);
   return Box({
@@ -1574,8 +1583,44 @@ function headerOf({ Box, Text }, track, ctx = {}) {
           Text({ color: pill.fg, backgroundColor: pill.bg, bold: true, children: ` ${row.pill} ` }),
         ],
       }),
-      Text({ dimColor: true, wrap: "truncate", children: facts.join(" · ") }),
+      tilesOf(ui, tiles),
     ],
+  });
+}
+
+// The context fill as a tile, amber from 80%, when the engine reports it.
+function contextTileOf(ctx) {
+  if (ctx.contextPercent == null) return null;
+  return { label: "CONTEXT", value: `${ctx.contextPercent}%`, color: ctx.contextPercent >= 80 ? DOT.waiting : undefined };
+}
+
+// Stat tiles in a row that wraps on a narrow pane: a dim label over a bold value, with an
+// optional dim note beside the value.
+function tilesOf({ Box, Text }, tiles) {
+  return Box({
+    flexDirection: "row",
+    flexWrap: "wrap",
+    columnGap: 3,
+    rowGap: 1,
+    marginTop: 1,
+    children: tiles.map((tile) =>
+      Box({
+        key: `tile:${tile.label}`,
+        flexDirection: "column",
+        flexShrink: 0,
+        children: [
+          Text({ dimColor: true, children: tile.label }),
+          Box({
+            flexDirection: "row",
+            gap: 1,
+            children: [
+              Text({ bold: true, color: tile.color, children: tile.value }),
+              tile.note ? Text({ dimColor: true, children: tile.note }) : null,
+            ].filter(Boolean),
+          }),
+        ],
+      }),
+    ),
   });
 }
 
