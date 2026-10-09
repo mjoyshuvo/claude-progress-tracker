@@ -1,14 +1,55 @@
 # progress-tracker
 
-progress-tracker is a Claude Code mod that shows what Claude is doing while it works. It draws a live progress bar in the band above the prompt, and it adds a Progress pane that lists what waits on you and what Claude found. It works in the terminal and in the desktop Code tab.
+progress-tracker is a Claude Code mod made for the **Code** tab of the Claude desktop app. It shows what Claude is doing while it works. It draws a live progress bar in the band above the prompt, and it adds a Progress pane that lists what waits on you and what Claude found.
+
+The mod also runs in the terminal. There, the bar is drawn in text characters, and the task list has no timeline graph.
 
 ![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes green with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
 
 ## Install the mod
 
-Before you install, check that you can run mods. Mods are an early-access Claude Code feature. You need Claude Code 2.1.287 or later, with function hooks switched on for your account. Without them, the mod's hooks do not run, and no bar appears.
+Mods are on by default in current versions of Claude Code. The desktop app runs its own copy of Claude Code, and mods work there from version 2.1.286. In the terminal, you need version 2.1.287 or later.
 
-1. In Claude Code, add the marketplace:
+### Check the desktop app's version
+
+1. In the **Code** tab, start a local session.
+2. Type `/status`, and read the **Claude Code** row.
+3. If the version is lower than 2.1.286, update the app. On macOS, select **Claude > Check for Updates**. On Windows, select **Help > Check for Updates**. Then start a new session.
+
+### Install in the desktop app
+
+The desktop app's plugin browser lists plugins only from the marketplaces you added. You add this mod's marketplace once, from a terminal. That step needs the `claude` command. If you don't have it, [install Claude Code for the terminal](https://code.claude.com/docs/en/quickstart) first, or [load a local copy](#load-a-local-copy) instead.
+
+1. In a terminal, add the marketplace:
+
+	```bash
+	claude plugin marketplace add mjoyshuvo/claude-progress-tracker
+	```
+
+2. Install the mod in the desktop app:
+	1. In a local session of the **Code** tab, click the **+** button next to the prompt box.
+	2. Select **Plugins**, then **Add plugin**.
+	3. Select **progress-tracker**.
+	4. For the scope, choose your user account.
+
+	You can also install it from the terminal instead:
+
+	```bash
+	claude plugin install progress-tracker@mjoyshuvo-mods
+	```
+
+	The terminal and the desktop app's local sessions read the same settings files, so either way installs the mod for both.
+
+3. Start a new session in the **Code** tab. To load the mod in a session that is already open, type `/reload-plugins`.
+4. Type `/progress-tracker-demo`. A sample run plays above the prompt for about 30 seconds.
+
+To turn the mod off or uninstall it, click **+**, then select **Plugins > Manage plugins**.
+
+The mod runs in local sessions only. Cloud sessions and WSL sessions do not load plugins.
+
+### Install in the terminal
+
+1. In a Claude Code session, add the marketplace:
 
 	```
 	/plugin marketplace add mjoyshuvo/claude-progress-tracker
@@ -21,15 +62,41 @@ Before you install, check that you can run mods. Mods are an early-access Claude
 	```
 
 3. Start a new session.
-4. Type `/progress-tracker-demo`. A sample run plays above the prompt for about 30 seconds.
+4. Type `/progress-tracker-demo`.
 
-Only one mod can draw in the band above the prompt. If you also use `plan-progress`, turn it off:
+### Load a local copy
+
+To run the mod from a folder on your computer, for example to change its code, load a local copy instead of installing it. Use one way only: install the mod, or load a local copy.
+
+1. Clone the repository:
+
+	```bash
+	git clone https://github.com/mjoyshuvo/claude-progress-tracker.git ~/.claude/progress-tracker
+	```
+
+2. Open `~/.claude/settings.json`, and set `CLAUDE_CODE_PLUGIN_DIRS` in its `env` block to the folder:
+
+	```json
+	{
+		"env": {
+			"CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/progress-tracker"
+		}
+	}
+	```
+
+	If the file already has an `env` block, add the line to it. To load more than one folder, separate the paths with `:` on macOS and Linux, or with `;` on Windows. Each path must be absolute or start with `~`.
+
+3. Start a new session in the **Code** tab.
+
+To update a local copy, run `git pull` in its folder, then start a new session.
+
+### Turn off other progress bar mods
+
+Only one mod can draw in the band above the prompt. If you also use `plan-progress`, turn it off in **+ > Plugins > Manage plugins**, or run this command:
 
 ```bash
 claude plugin disable plan-progress@zycck-mods
 ```
-
-The desktop app loads mods from the `CLAUDE_CODE_PLUGIN_DIRS` variable in the `env` block of `~/.claude/settings.json`. To load a local copy there, set that variable to the mod's folder, for example `~/.claude/progress-tracker`.
 
 ## Features
 
