@@ -947,4 +947,20 @@ describe("progress-tracker", () => {
     expect(hung).toBe(1);
     expect(textOf(await $.ui.render(BAND))).toContain("Ship 2/2");
   });
+
+  test("in a narrow desktop pane the bar keeps 40% of the row and the buttons stay", async ($, on) => {
+    world(on);
+    const TOOL = "mcp__progress-tracker__progress_tracker";
+    const desk = (bodyColumns: number) => ({ ...BAND, surface: "desktop", props: { ...BAND.props, bodyColumns } }) as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await $.tool.call({ tool: TOOL, title: "Move the session store to the new cache layer", tasks: ["Build", "Ship"] } as any);
+
+    let tree = await $.ui.render(desk(75));
+    expect(svgsOf(tree)[0].width).toBe(240);
+    const keys = keysOf(tree);
+    for (const prefix of ["expand:", "pane:", "dismiss:"]) expect(keys.some((k: string) => k.startsWith(prefix))).toBe(true);
+
+    tree = await $.ui.render(desk(30));
+    expect(svgsOf(tree)[0].width).toBe(140);
+  });
 });

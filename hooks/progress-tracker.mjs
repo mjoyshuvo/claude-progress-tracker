@@ -1358,10 +1358,11 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
   const rows = tracks.map((t) => rowOf(t, 200, ctx));
   const total = Math.max(320, (props.bodyColumns || 100) * 8);
   const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...rows.map((r) => r.label.length * 6.4)));
-  // stats text plus dot, "▼ Tasks", ☰, ✕ and gaps (~16 columns), at 8px per column
-  const reserved = (Math.max(...rows.map((r) => r.stats.length)) + 16) * 8;
-  // the bar keeps at least 40% of the row; past that the stats truncate instead
-  const width = Math.max(Math.round(total * 0.4), Math.min(1400, Math.round(total - titleWidth - reserved)));
+  // stats text (about 7px a character in the body font) plus dot, "▼ Tasks", ☰, ✕ and
+  // gaps (~16 columns at 8px)
+  const reserved = Math.max(...rows.map((r) => r.stats.length)) * 7 + 16 * 8;
+  // the bar keeps at least 40% of the row and 140px; past that the stats truncate instead
+  const width = Math.max(140, Math.round(total * 0.4), Math.min(1400, Math.round(total - titleWidth - reserved)));
   return Box({
     flexDirection: "column",
     gap: 1,
@@ -1382,7 +1383,8 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
         gap: 1,
         children: [
           Text({ color: DOT[r.status], bold: r.status === "failed", children: r.status === "failed" ? "!" : "●" }),
-          Text({ wrap: "truncate", children: r.label }),
+          // in the narrowest panes the title gives way first, so the bar and buttons fit
+          Box({ flexShrink: 1, minWidth: 0, children: [Text({ wrap: "truncate", children: r.label })] }),
           Box({ flexGrow: 1 }),
           bar,
           // stats truncate before the buttons get pushed out of a narrow pane
