@@ -1,6 +1,6 @@
 {
   "name": "progress-tracker",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A live progress bar for the current task list and plan, drawn in the band above the prompt.",
   "author": { "name": "Mrityunjoy Das" },
   "license": "MIT",
