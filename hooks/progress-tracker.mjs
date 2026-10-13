@@ -1358,7 +1358,10 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
   const rows = tracks.map((t) => rowOf(t, 200, ctx));
   const total = Math.max(320, (props.bodyColumns || 100) * 8);
   const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...rows.map((r) => r.label.length * 6.4)));
-  const width = Math.max(140, Math.min(1400, Math.round(total - titleWidth - 210)));
+  // stats text plus dot, "▼ Tasks", ☰, ✕ and gaps (~16 columns), at 8px per column
+  const reserved = (Math.max(...rows.map((r) => r.stats.length)) + 16) * 8;
+  // the bar keeps at least 40% of the row; past that the stats truncate instead
+  const width = Math.max(Math.round(total * 0.4), Math.min(1400, Math.round(total - titleWidth - reserved)));
   return Box({
     flexDirection: "column",
     gap: 1,
@@ -1382,13 +1385,22 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
           Text({ wrap: "truncate", children: r.label }),
           Box({ flexGrow: 1 }),
           bar,
+          // stats truncate before the buttons get pushed out of a narrow pane
           Box({
-            flexShrink: 0,
+            flexShrink: 1,
+            minWidth: 0,
             children: [Text({ dimColor: true, wrap: "truncate", children: r.stats })],
           }),
-          Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▼ Tasks" : "▶ Tasks", plain: true, onPress: toggle(r.id) }),
-          Button({ key: `pane:${r.id}`, label: "☰", plain: true, dimColor: true, onPress: pane }),
-          Button({ key: `dismiss:${r.id}`, label: "✕", plain: true, dimColor: true, onPress: dismiss(r.id) }),
+          Box({
+            flexShrink: 0,
+            flexDirection: "row",
+            gap: 1,
+            children: [
+              Button({ key: `expand:${r.id}`, label: r.isExpanded ? "▼ Tasks" : "▶ Tasks", plain: true, onPress: toggle(r.id) }),
+              Button({ key: `pane:${r.id}`, label: "☰", plain: true, dimColor: true, onPress: pane }),
+              Button({ key: `dismiss:${r.id}`, label: "✕", plain: true, dimColor: true, onPress: dismiss(r.id) }),
+            ],
+          }),
         ].filter(Boolean),
       });
       if (!r.isExpanded) return Box({ key: r.id, children: [line] });
