@@ -1332,7 +1332,8 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
   const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...rows.map((r) => r.label.length * 6.4)));
   // stats text plus dot, "▼ Tasks", ☰, ✕ and gaps (~16 columns), at 8px per column
   const reserved = (Math.max(...rows.map((r) => r.stats.length)) + 16) * 8;
-  const width = Math.max(140, Math.min(1400, Math.round(total - titleWidth - reserved)));
+  // the bar keeps at least 40% of the row; past that the stats truncate instead
+  const width = Math.max(Math.round(total * 0.4), Math.min(1400, Math.round(total - titleWidth - reserved)));
   return Box({
     flexDirection: "column",
     gap: 1,
