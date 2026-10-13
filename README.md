@@ -4,7 +4,7 @@ progress-tracker is a Claude Code mod made for the **Code** tab of the Claude de
 
 The mod also runs in the terminal. There, the bar is drawn in text characters, and the task list has no timeline graph.
 
-![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes green with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
+![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes teal with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
 
 ## Install the mod
 
@@ -121,7 +121,7 @@ claude plugin disable plan-progress@zycck-mods
 3. A sub-agent runs, and the pill shows `· 1 agent`.
 4. The "Test" step fails twice. The row turns red, the pill shows `×2`, and the **Found** tab lists the failure and a finding.
 5. The step recovers. Then the row turns amber, and **Blocked on me** lists `Allow npm publish` until it is answered.
-6. The bar finishes green. About 12 seconds later, the row and its pane entries clear.
+6. The bar finishes teal. About 12 seconds later, the row and its pane entries clear.
 
 The demo bar moves even while Claude is idle.
 
@@ -138,7 +138,7 @@ The colour of a row tells you its state:
 | Purple | Claude is working. | `Build 2/5` or `Working · 12 steps` |
 | Red | A check failed in the current task. | `✕ Verify 1/2` or `✕ Test 3/5 ×3` |
 | Amber | Claude waits for you. | `Waiting for you` or `Waiting for approval` |
-| Green | Every task is done. | `✓ Done 5/5` or `✓ Done · 12 steps` |
+| Teal | Every task is done. | `✓ Done 5/5` or `✓ Done · 12 steps` |
 
 The numbers after the bar are all measured:
 
@@ -219,13 +219,13 @@ If Claude makes 12 tool calls without moving the bar, the mod adds one note to a
 
 ### The Working bar
 
-Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". The pill counts the steps, because the total is not known. When the turn ends, the open step becomes "Write reply", and the row turns green.
+Outside plan mode, the mod starts a row named "Working" on the 3rd tool call of a turn, if no other row is still open. Each tool call becomes a finished step, named after the call's description or file, for example "Read config.ts". The pill counts the steps, because the total is not known. When the turn ends, the open step becomes "Write reply", and the row turns teal.
 
 On that 3rd tool call, Claude also gets a note that only it reads. The note asks Claude to send its task list if more steps are coming. When Claude sends a list with `progress_tracker`, `TaskCreate`, or `TodoWrite`, the list replaces the automatic steps, and the row shows a real total.
 
 ### Plan mode
 
-In plan mode, a row named "Planning" appears. Each tool call becomes a finished step until Claude sends its own planning steps with `progress_tracker`. The row turns amber while Claude asks you to approve the plan. Whether you approve or reject the plan, the Planning row turns green. If you leave plan mode without an answer to a plan, the mod removes the Planning row.
+In plan mode, a row named "Planning" appears. Each tool call becomes a finished step until Claude sends its own planning steps with `progress_tracker`. The row turns amber while Claude asks you to approve the plan. Whether you approve or reject the plan, the Planning row turns teal. If you leave plan mode without an answer to a plan, the mod removes the Planning row.
 
 ### Waits, failures, and sub-agents
 
@@ -244,7 +244,7 @@ On desktop, press `▶ Tasks` on a row to open its timeline. A line connects the
 - A sub-agent that runs in the background shows `background` instead of a time.
 - A task that failed shows how many times, for example `· failed ×2`.
 
-When the timeline opens, the line draws itself from the top, and the dots appear one by one. Then a light pulse runs down the line on a loop and splits into the branches.
+When the timeline opens, the line draws itself from the top, and the dots appear one by one, each with one ring. Then the timeline holds still.
 
 ## Known limits
 

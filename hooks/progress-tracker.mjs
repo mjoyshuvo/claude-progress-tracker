@@ -15,17 +15,22 @@ const STALE_MS = 12 * 60 * 60 * 1000;
 // A finished bar stays this long, then hides itself.
 const DONE_LINGER_MS = 60 * 1000;
 
-const DOT = { working: "#a99cf5", failed: "#e5604f", done: "#7cc68a", waiting: "#f0b34a" };
+const DOT = { working: "#a99cf5", failed: "#ef6f5c", done: "#2bb5a5", waiting: "#f0b34a" };
 const PILL = {
   working: { bg: "#a99cf5", fg: "#1d1a2e" },
-  failed: { bg: "#e5604f", fg: "#ffffff" },
-  done: { bg: "#7cc68a", fg: "#14261a" },
+  failed: { bg: "#ef6f5c", fg: "#2a0a05" },
+  done: { bg: "#2bb5a5", fg: "#04201d" },
   waiting: { bg: "#f0b34a", fg: "#2a1c05" },
 };
 
 // The running animation: one timer repaints every moving bar with $.ui.blit.
-// Timers die with a hot reload, so this holds no data worth keeping.
-const animation = { timer: null, requestId: null, bars: [], t: 0 };
+// Timers die with a hot reload, so this holds no data worth keeping. `tickAt` is
+// the last frame: an interval whose period the host dropped (as after a long idle)
+// ends without a word, and a stale `tickAt` tells the next draw to start another.
+// `sentAt` holds each bar's blit still in flight, so frames do not pile up behind
+// a surface that is not painting.
+const animation = { timer: null, requestId: null, bars: [], t: 0, tickAt: 0, sentAt: new Map() };
+const STALL_MS = 1000;
 
 // Held by the host, so tracks survive a hot reload of this file.
 const TRACKS = { plugin: "progress-tracker", key: "tracks" };
@@ -47,8 +52,11 @@ const TURN = { plugin: "progress-tracker", key: "turn" };
 // The progress_tracker inputs that move the bar; a call with none of them only logs a finding.
 const TOOL_OPS = new Set(["title", "tasks", "next", "active", "add", "skip", "failed", "fixed"]);
 
-// Parallel tool calls each read-modify-write the tracks; run them one by one.
+// Parallel tool calls each read-modify-write the tracks; run them one by one. A job
+// whose host call never settles (its dispatch dropped while the app sat idle) holds
+// the line for QUEUE_WAIT_MS at most, so one lost call cannot freeze the bar.
 let queue = Promise.resolve();
+const QUEUE_WAIT_MS = 4000;
 
 // Outside plan mode a turn's first tool calls wait here; the AUTO_BAR_CALLS-th starts
 // a "Working" bar from them when Claude has no bar running. Reset on each turn.
@@ -404,7 +412,7 @@ export function register(on) {
     const { value: tracks = [] } = await $.state.get(TRACKS);
     const agents = await runningAgentsOf($);
     const shown = tracks
-      .filter((t) => !t.isDismissed && t.tasks.length > 0)
+      .filter((t) => !t.isDismissed && t.tasks.length > 0 && !isPastLinger(t))
       .map((t, i, all) => (i === all.length - 1 ? { ...t, agents: t.isDemo ? (t.demoAgents ?? 0) : agents } : t));
     const ui = $.ui.resolve(e);
     const ctx = await contextOf($);
@@ -454,26 +462,41 @@ export function register(on) {
 
 // ---- state ----
 
-function update($, change) {
-  queue = queue
-    .then(async () => {
-      const { value: tracks = [] } = await $.state.get(TRACKS);
-      let changed = change(tracks);
-      if (changed === tracks) return;
-      const before = new Map(tracks.map((t) => [t.id, t]));
-      changed = changed.map((t) => stampWait(before.get(t.id), stampDone($, stampFailure(before.get(t.id), stampTasks(t)))));
-      await $.state.set(TRACKS, changed);
-      for (const t of changed) notify($, before.get(t.id), t);
-      const failures = changed.filter((t) => t.failureToLog && t.failureToLog !== before.get(t.id)?.failureToLog);
-      if (failures.length > 0) {
-        await writeLog($, (log) => ({
-          ...log,
-          findings: capped([...log.findings, ...failures.map((t, i) => ({ kind: "failed", ...t.failureToLog, id: entryId("failed", log.findings.length + i), at: Date.now(), isDemo: t.isDemo }))]),
-        }));
-      }
-    })
-    .catch(() => undefined);
+function enqueue($, job) {
+  const before = queue;
+  const turn = new Promise((resolve) => {
+    let timer = null;
+    try {
+      timer = $.clock.after(QUEUE_WAIT_MS, resolve);
+    } catch {
+      // No timer: wait for the job before, however long it takes.
+    }
+    void before.then(() => {
+      timer?.cancel();
+      resolve();
+    });
+  });
+  queue = turn.then(job).catch(() => undefined);
   return queue;
+}
+
+function update($, change) {
+  return enqueue($, async () => {
+    const { value: tracks = [] } = await $.state.get(TRACKS);
+    let changed = change(tracks);
+    if (changed === tracks) return;
+    const before = new Map(tracks.map((t) => [t.id, t]));
+    changed = changed.map((t) => stampWait(before.get(t.id), stampDone($, stampFailure(before.get(t.id), stampTasks(t)))));
+    await $.state.set(TRACKS, changed);
+    for (const t of changed) notify($, before.get(t.id), t);
+    const failures = changed.filter((t) => t.failureToLog && t.failureToLog !== before.get(t.id)?.failureToLog);
+    if (failures.length > 0) {
+      await writeLog($, (log) => ({
+        ...log,
+        findings: capped([...log.findings, ...failures.map((t, i) => ({ kind: "failed", ...t.failureToLog, id: entryId("failed", log.findings.length + i), at: Date.now(), isDemo: t.isDemo }))]),
+      }));
+    }
+  });
 }
 
 // ---- measured numbers: work, wait, tokens, context ----
@@ -591,8 +614,7 @@ async function writeLog($, change) {
 }
 
 function changeLog($, change) {
-  queue = queue.then(() => writeLog($, change)).catch(() => undefined);
-  return queue;
+  return enqueue($, () => writeLog($, change));
 }
 
 async function currentTaskOf($) {
@@ -717,6 +739,12 @@ function notify($, old, track) {
   } catch {
     // No toasts on this surface.
   }
+}
+
+// A finished bar past its minute. The timer stampDone sets hides it; this covers a
+// timer lost with the hooks worker, so a done bar never sticks around.
+function isPastLinger(track) {
+  return track.doneAt != null && !track.isDemo && !track.isExpanded && Date.now() - track.doneAt > DONE_LINGER_MS + 5000;
 }
 
 // Notes when a track finishes (to freeze its clock) and hides it a minute later.
@@ -1378,20 +1406,22 @@ function drawDesktop({ Box, Text, Button, Svg }, tracks, props, { dismiss, toggl
               children: [
                 Svg
                   ? Svg({
-                      source: timelineSvg({ ...entry, isFirst: i === 0, isLast: i === all.length - 1, index: i, count: all.length }),
+                      source: timelineSvg({ ...entry, isFirst: i === 0, isLast: i === all.length - 1, index: i }),
                       alt: entry.isAgent ? "sub-agent" : entry.pos === "main" ? "step" : "parallel step",
                       width: GUTTER_WIDTH,
                       height: ROW_HEIGHT,
                       isInteractive: true,
                     })
                   : Text({ color: entry.isAgent ? DOT.working : DOT.done, children: entry.pos === "main" ? " ●" : " ┆●" }),
-                Text({ wrap: "truncate", dimColor: entry.isSkipped || entry.status === "pending", children: entry.subject }),
-                entry.note ? Text({ dimColor: true, wrap: "truncate", children: entry.note }) : null,
+                Text({ wrap: "truncate", dimColor: entry.isSkipped || entry.status === "pending", strikethrough: entry.isSkipped || undefined, children: entry.subject }),
+                ...chipsOf(entry).map((chip) => Text({ color: chip.color, backgroundColor: chip.background, children: ` ${chip.text} ` })),
+                parallelOf(entry) ? Text({ dimColor: true, wrap: "truncate", children: parallelOf(entry) }) : null,
                 Box({ flexGrow: 1 }),
                 Text({ dimColor: true, children: entry.time }),
               ].filter(Boolean),
             }),
           ),
+          Text({ dimColor: true, wrap: "truncate", children: totalsOf(r) }),
         ],
       });
     }),
@@ -1407,14 +1437,26 @@ function animate($, requestId, rows) {
     animation.timer = null;
     return;
   }
-  if (animation.timer) return;
+  if (animation.timer && Date.now() - animation.tickAt < STALL_MS) return;
+  animation.timer?.cancel();
+  animation.timer = null;
+  animation.sentAt.clear();
+  animation.tickAt = Date.now();
   try {
     animation.timer = $.clock.every(FRAME_MS, () => {
+      const now = Date.now();
+      animation.tickAt = now;
       animation.t += FRAME_MS;
       for (const bar of animation.bars) {
+        const sentAt = animation.sentAt.get(bar.key);
+        if (sentAt !== undefined && now - sentAt < STALL_MS) continue;
+        animation.sentAt.set(bar.key, now);
         $.ui
           .blit({ requestId: animation.requestId, key: bar.key, cells: cellsOf(bar, animation.t) })
-          .catch(() => undefined);
+          .catch(() => undefined)
+          .finally(() => {
+            if (animation.sentAt.get(bar.key) === now) animation.sentAt.delete(bar.key);
+          });
       }
     });
   } catch {
@@ -1447,6 +1489,35 @@ function base64Of(bytes) {
 // 45s, 2m 14s, 1h 05m.
 // The finished list as timeline rows: each task, then the sub-agents it ran on a branch.
 // Steps whose run times overlap ran in parallel and share a branch too.
+// The small labels on a breakdown row: who ran it, and how often it failed first.
+const CHIP = {
+  agent: { color: "#b9adff", background: "#2a2838" },
+  failed: { color: "#ff9a8a", background: "#33242a" },
+};
+
+function chipsOf(entry) {
+  return [
+    entry.agentLabel ? { text: entry.agentLabel, ...CHIP.agent } : null,
+    entry.failures > 0 ? { text: `failed ×${entry.failures}`, ...CHIP.failed } : null,
+  ].filter(Boolean);
+}
+
+function parallelOf(entry) {
+  return entry.notes.find((note) => note.endsWith("in parallel")) ?? null;
+}
+
+// The breakdown's last line: measured totals for the whole list.
+function totalsOf(row) {
+  const agents = row.track.agentRuns?.length ?? 0;
+  return [
+    `${durationOf(row.workMs)} work`,
+    row.waitMs >= 1000 ? `${durationOf(row.waitMs)} waited on you` : null,
+    agents > 0 ? `${agents} agent${agents === 1 ? "" : "s"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function timelineOf(track) {
   const rows = [];
   for (const task of track.tasks) {
@@ -1468,8 +1539,11 @@ function timelineOf(track) {
       }
       if (j > i) rows[i].notes.push(`${j - i + 1} in parallel`);
     }
-    if (j > i || rows[i].isSubAgent) {
+    if (rows[i].isSubAgent) {
       for (let k = i; k <= j; k++) rows[k].pos = i === j ? "only" : k === i ? "start" : k === j ? "end" : "middle";
+    } else if (j > i) {
+      // Steps at the same time: the first keeps the main line and the branch forks from it.
+      for (let k = i; k <= j; k++) rows[k].pos = k === i ? "fork" : k === j ? "end" : "middle";
     }
     i = j + 1;
   }
@@ -1490,6 +1564,8 @@ function entryOf(item) {
     pos: "main",
     isAgent: agent !== undefined,
     isSkipped: item.isSkipped === true,
+    failures: item.failures ?? 0,
+    agentLabel: agent ? `${agent.type} agent` : null,
     notes,
     time: agent?.isBackground
       ? "background"

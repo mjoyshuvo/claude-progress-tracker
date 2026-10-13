@@ -301,8 +301,13 @@ describe("progress-tracker", () => {
     expect(textOf(await $.ui.render(BAND))).toContain("✓ Done 7/7");
     const timeline = textOf(await $.ui.render(DESK));
     expect(timeline).toContain("3 in parallel");
-    expect(timeline).toContain("Map the routes· Explore agent");
+    expect(timeline).toContain("Map the routes Explore agent");
     expect(timeline).toContain("failed ×2");
+    expect(timeline).toMatch(/\d+s work/);
+    const gutters = svgsOf(await $.ui.render(DESK)).slice(1);
+    expect(gutters.every((svg: any) => svg.source.includes("#2f6f68"))).toBe(true);
+    expect(gutters.filter((svg: any) => svg.source.includes("Q21 11 21 22"))).toHaveLength(1);
+    expect(gutters.some((svg: any) => svg.source.includes('r="7"'))).toBe(true);
     expect(opened).toContain("progress");
 
     await press($, "tab:found");
@@ -888,5 +893,58 @@ describe("progress-tracker", () => {
     await tasks($, ["Only"]);
     await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
     expect(toasts.join("\n")).toMatch(/✓ Only done in \d+s/);
+  });
+
+  test("a moving desktop bar animates a dozen groups, not every dot", async ($, on) => {
+    world(on);
+    const DESK = { ...BAND, surface: "desktop", props: { ...BAND.props, bodyColumns: 200 } } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await tasks($, ["Build", "Lint", "Ship"]);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "2", status: "completed" } as any);
+    const [svg] = svgsOf(await $.ui.render(DESK));
+    expect(svg.source.match(/<animate /g)?.length ?? 0).toBeLessThanOrEqual(14);
+  });
+
+  test("a finished bar's task breakdown is teal and animates once, then rests", async ($, on) => {
+    world(on);
+    const DESK = { ...BAND, surface: "desktop", props: { ...BAND.props, isWorking: false } } as any;
+    await $.session.start({ surface: "desktop", cwd: "/work" } as any);
+    await tasks($, ["Build", "Ship"]);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
+    await $.tool.call({ tool: "TaskUpdate", taskId: "2", status: "completed" } as any);
+    const key = keysOf(await $.ui.render(DESK)).find((k: string) => k.startsWith("expand:"));
+    await press($, key!);
+    const svgs = svgsOf(await $.ui.render(DESK));
+    const steps = svgs.filter((svg: any) => svg.alt === "step");
+    expect(steps).toHaveLength(2);
+    for (const svg of steps) {
+      expect(svg.source).toContain("#2bb5a5");
+      expect(svg.source).not.toContain("indefinite");
+    }
+    expect(svgs[0].source).toContain("#2bb5a5");
+    expect(svgs[0].source).not.toContain("#7cc68a");
+  });
+
+  test("a state write that never settles holds the next update for a few seconds, not forever", async ($, on) => {
+    const { clock } = world(on);
+    let hung = 0;
+    let isHung = false;
+    on("state.set", ($: any, e: any, next: any) => {
+      if (!isHung || e.key !== "tracks") return next(e);
+      hung += 1;
+      return new Promise(() => {});
+    });
+    await $.session.start({ surface: "terminal", cwd: "/work" } as any);
+    await tasks($, ["Build", "Ship"]);
+    isHung = true;
+    void $.tool.call({ tool: "TaskUpdate", taskId: "2", subject: "Deploy" } as any);
+    await clock.advance(10);
+    isHung = false;
+    const later = $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
+    await clock.advance(4000);
+    await later;
+    expect(hung).toBe(1);
+    expect(textOf(await $.ui.render(BAND))).toContain("Ship 2/2");
   });
 });
