@@ -1,5 +1,7 @@
 # progress-tracker
 
+[![Unique clones](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmjoyshuvo%2Fclaude-progress-tracker%2Fstats%2Fstats.json&query=%24.uniques&label=unique%20clones&color=2bb5a5)](https://github.com/mjoyshuvo/claude-progress-tracker/blob/stats/stats.json)
+
 progress-tracker is a Claude Code mod made for the **Code** tab of the Claude desktop app. It shows what Claude is doing while it works. It draws a live progress bar in the band above the prompt, and it adds a Progress pane that lists what waits on you and what Claude found.
 
 The mod also runs in the terminal. There, the bar is drawn in text characters, and the task list has no timeline graph.

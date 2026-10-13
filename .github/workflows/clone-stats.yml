@@ -1,0 +1,41 @@
+# Once a day, adds the repo's unique clones per day to stats.json on the `stats` branch.
+# The README badge reads `uniques` from that file. GitHub keeps traffic for 14 days only,
+# so each run merges the days it sees into the saved ones; a day seen again takes the
+# newer number. Reading traffic needs a token with Administration: Read-only on this
+# repo, saved as the TRAFFIC_TOKEN secret.
+name: Clone stats
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stats
+
+      - name: Merge the last 14 days of unique clones
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/traffic/clones" > clones.json
+          jq -s '(.[0].daily + (.[1].clones | map({(.timestamp[:10]): .uniques}) | add)) as $d
+            | {uniques: ([$d[]] | add // 0), updated: (now | todate), daily: $d}' stats.json clones.json > next.json
+          mv next.json stats.json
+          rm clones.json
+
+      - name: Save
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats.json
+          git diff --cached --quiet -- stats.json && exit 0
+          git commit -m "Update clone stats"
+          git push
