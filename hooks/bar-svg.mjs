@@ -131,3 +131,18 @@ function hash(n) {
 function escape(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+// A status pill on its own, for the Progress pane's header: a rounded capsule in the
+// state's colour. Drawn as a still image; returns its source and size.
+export function pillSvg({ status, text }) {
+  const p = PALETTE[status];
+  const h = 22;
+  const w = Math.ceil(text.length * 6.9) + 22;
+  const source = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    `<rect width="${w}" height="${h}" rx="${h / 2}" fill="${p.pill}"/>`,
+    `<text x="${w / 2}" y="${h / 2}" fill="${p.ink}" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="12" font-weight="700" text-anchor="middle" dominant-baseline="central">${escape(text)}</text>`,
+    `</svg>`,
+  ].join("");
+  return { source, width: w, height: h };
+}

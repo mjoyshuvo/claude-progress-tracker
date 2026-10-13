@@ -5,7 +5,7 @@
 // fresh one. Only the main loop counts: subagent calls (e.agentId) are skipped.
 
 import { barCells, ROWS as BAR_ROWS } from "./bar.mjs";
-import { barSvg, SVG_HEIGHT } from "./bar-svg.mjs";
+import { barSvg, pillSvg, SVG_HEIGHT } from "./bar-svg.mjs";
 import { timelineSvg, ROW_HEIGHT, GUTTER_WIDTH } from "./timeline-svg.mjs";
 
 const MAX_ROWS = 3;
@@ -1634,7 +1634,7 @@ function drawPane(ui, { log, tab, track, ctx }, select) {
 // The current list, then its measured numbers as labelled tiles: progress, this task's
 // time, work, wait, the list's tokens, and the session's context fill.
 function headerOf(ui, track, ctx = {}) {
-  const { Box, Text } = ui;
+  const { Box, Text, Svg } = ui;
   const context = contextTileOf(ctx);
   if (!track) {
     return Box({
@@ -1670,7 +1670,9 @@ function headerOf(ui, track, ctx = {}) {
           Text({ color: DOT[row.status], children: row.status === "failed" ? "!" : "●" }),
           Text({ bold: true, wrap: "truncate", children: row.label }),
           Box({ flexGrow: 1 }),
-          Text({ color: pill.fg, backgroundColor: pill.bg, bold: true, children: ` ${row.pill} ` }),
+          Svg
+            ? Svg({ ...pillSvg({ status: row.status, text: row.pill }), alt: row.pill })
+            : Text({ color: pill.fg, backgroundColor: pill.bg, bold: true, children: ` ${row.pill} ` }),
         ],
       }),
       tilesOf(ui, tiles),
