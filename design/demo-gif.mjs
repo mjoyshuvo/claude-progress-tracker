@@ -23,8 +23,8 @@ const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9300 + Math.floor(Math.random() * 600);
 const OUT = fileURLToPath(new URL("../docs/demo.gif", import.meta.url));
 
-const COLOR = { working: "#a99cf5", failed: "#e5604f", done: "#7cc68a", waiting: "#f0b34a" };
-const INK = { working: "#1d1a2e", failed: "#ffffff", done: "#14261a", waiting: "#2a1c05" };
+const COLOR = { working: "#a99cf5", failed: "#ef6f5c", done: "#2bb5a5", waiting: "#f0b34a" };
+const INK = { working: "#1d1a2e", failed: "#2a0a05", done: "#04201d", waiting: "#2a1c05" };
 
 // ---- the story: one scene per state the mod shows ----
 
@@ -95,13 +95,17 @@ const SCENES = [
   },
 ];
 
+// [subject, time, gutter options, chips, note]: an agent under Find bug, and Test and Docs
+// at the same time, so the GIF shows both lanes of the timeline.
 const TIMELINE = [
-  ["Find bug", "32.1s"],
-  ["Fix refresh", "48.4s"],
-  ["Test", "56.0s", "· failed ×2"],
-  ["Docs", "16.8s"],
-  ["Ship", "18.7s"],
+  ["Find bug", "32.1s", { pos: "main" }],
+  ["Map auth calls", "21.4s", { pos: "only", isAgent: true }, [["Explore agent", "agent"]]],
+  ["Fix refresh", "48.4s", { pos: "main" }],
+  ["Test", "56.0s", { pos: "fork", failures: 2 }, [["failed ×2", "failed"]], "2 in parallel"],
+  ["Docs", "16.8s", { pos: "end" }, [], "2 in parallel"],
+  ["Ship", "18.7s", { pos: "main" }],
 ];
+const TOTALS = "2m 40s work · 12s waited on you · 1 agent";
 
 // ---- drawing ----
 
@@ -122,11 +126,12 @@ function bandOf(b) {
   const dot = b.status === "failed" ? "!" : "●";
   const head = `<div class="row"><span class="dot" style="color:${COLOR[b.status]}">${dot}</span><span class="label">${esc(b.label)}</span><span class="grow"></span>${bar}<span class="stats">${esc(b.stats)}</span><span class="btn">${b.timeline ? "▼" : "▶"} Tasks</span><span class="btn dim">☰</span><span class="btn dim">✕</span></div>`;
   if (!b.timeline) return head;
-  const rows = TIMELINE.map(([subject, time, note], i) => {
-    const gutter = own(timelineSvg({ pos: "main", isFirst: i === 0, isLast: i === TIMELINE.length - 1, index: i, count: TIMELINE.length }));
-    return `<div class="trow">${gutter}<span>${esc(subject)}</span>${note ? `<span class="dim">${esc(note)}</span>` : ""}<span class="grow"></span><span class="dim">${time}</span></div>`;
+  const rows = TIMELINE.map(([subject, time, opts, chips = [], note], i) => {
+    const gutter = own(timelineSvg({ ...opts, isFirst: i === 0, isLast: i === TIMELINE.length - 1, index: i }));
+    const tags = chips.map(([text, kind]) => `<span class="chip ${kind}">${esc(text)}</span>`).join("");
+    return `<div class="trow">${gutter}<span>${esc(subject)}</span>${tags}${note ? `<span class="dim">${esc(note)}</span>` : ""}<span class="grow"></span><span class="dim">${time}</span></div>`;
   }).join("");
-  return head + `<div class="timeline">${rows}</div>`;
+  return head + `<div class="timeline">${rows}<div class="dim totals">${esc(TOTALS)}</div></div>`;
 }
 
 function tilesOf(tiles) {
@@ -191,10 +196,10 @@ const CSS = `
 #band{background:#232323;border-radius:12px;padding:10px 12px;margin:14px 0 10px}
 .row{display:flex;align-items:center;gap:8px}.label{font-size:14px;white-space:nowrap}.stats{color:#9a9a9a;font-size:12px;white-space:nowrap}
 .btn{font-size:12px;white-space:nowrap}.dim{color:#8f8f8f}.grow{flex:1}.dot{font-size:12px}
-.timeline{margin-top:4px}.trow{display:flex;align-items:center;gap:8px;height:${ROW_HEIGHT}px}.trow svg{width:${GUTTER_WIDTH}px;flex-shrink:0}
+.timeline{margin-top:4px}.chip{border-radius:4px;padding:0 6px;font-size:12px}.chip.agent{background:#2a2838;color:#b9adff}.chip.failed{background:#33242a;color:#ff9a8a}.totals{margin:4px 0 0 38px;font-size:12px}.trow{display:flex;align-items:center;gap:8px;height:${ROW_HEIGHT}px}.trow svg{width:${GUTTER_WIDTH}px;flex-shrink:0}
 #prompt{border:1px solid #3a3a3a;border-radius:12px;padding:11px 14px;color:#777}
 .ptitle{display:flex;color:#bdbdbd;margin-bottom:14px}.ptitle .grow{flex:1}
-.phead{display:flex;align-items:center;gap:6px;font-size:14px}.pill{border-radius:3px;padding:1px 6px;font-weight:600;font-size:13px}
+.phead{display:flex;align-items:center;gap:6px;font-size:14px}.pill{border-radius:999px;padding:2px 10px;font-weight:700;font-size:13px}
 .tiles{display:flex;flex-wrap:wrap;gap:8px 22px;margin:12px 0 14px}.tlabel{color:#8f8f8f;font-size:10.5px;letter-spacing:.04em;margin-bottom:1px}.tile b{font-size:14px}
 .tabs{display:flex;gap:8px;margin-bottom:12px}.tab{border-radius:7px;padding:5px 9px;background:#2b2b2b;color:#bdbdbd}.tab.on{background:#ececec;color:#141414}
 .key{display:inline-block;border:1px solid #555;border-radius:4px;padding:0 4px;font-size:10px;margin-left:4px;color:#999}.tab.on .key{border-color:#bbb;color:#555}
