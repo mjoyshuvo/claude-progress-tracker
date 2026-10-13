@@ -1,4 +1,4 @@
-// Draws docs/demo.gif: a mock of the desktop Code tab with the mod's own bar and timeline
+// Draws docs/demo-v0.3.gif: a mock of the desktop Code tab with the mod's own bar and timeline
 // SVGs, the Progress pane beside the chat, and toasts. Headless Chrome screenshots each
 // frame with the SVG animation clock set to the frame's time; design/frames-to-gif.py
 // joins the frames.
@@ -21,7 +21,7 @@ const FRAME_MS = 100;
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 // A port of its own per run, so a Chrome still closing from the last run does not clash.
 const PORT = 9300 + Math.floor(Math.random() * 600);
-const OUT = fileURLToPath(new URL("../docs/demo.gif", import.meta.url));
+const OUT = fileURLToPath(new URL("../docs/demo-v0.3.gif", import.meta.url));
 
 const COLOR = { working: "#a99cf5", failed: "#ef6f5c", done: "#2bb5a5", waiting: "#f0b34a" };
 const INK = { working: "#1d1a2e", failed: "#2a0a05", done: "#04201d", waiting: "#2a1c05" };

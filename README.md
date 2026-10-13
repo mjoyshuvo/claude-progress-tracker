@@ -6,7 +6,7 @@ progress-tracker is a Claude Code mod made for the **Code** tab of the Claude de
 
 The mod also runs in the terminal. There, the bar is drawn in text characters, and the task list has no timeline graph.
 
-![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes teal with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo.gif)
+![A desktop session: a Working bar counts steps, Claude's own list takes over with a real total, a test fails twice and turns the row red, a permission prompt turns it amber, and the list finishes teal with its timeline open. The Progress pane beside the chat shows the measured numbers, the failing check's error lines, and the answered permission prompt.](docs/demo-v0.3.gif)
 
 ## Install the mod
 
@@ -284,7 +284,7 @@ To run the mod against a stand-in for Claude Code, without Claude Code:
 node dev/simulate.mjs
 ```
 
-To redraw `docs/demo.gif` from the mod's own bar and timeline SVGs, you need Google Chrome in `/Applications` and Python 3 with Pillow:
+To redraw `docs/demo-v0.3.gif` from the mod's own bar and timeline SVGs, you need Google Chrome in `/Applications` and Python 3 with Pillow:
 
 ```bash
 node design/demo-gif.mjs
@@ -311,7 +311,7 @@ node design/harness.mjs two-row-smooth
 | `types/index.d.ts` | The types of the stored rows and the pane's log. |
 | `tests/progress-tracker.test.ts` | The tests. |
 | `dev/simulate.mjs` | The stand-in run. |
-| `design/demo-gif.mjs` | Draws `docs/demo.gif`. `design/frames-to-gif.py` joins its frames. |
+| `design/demo-gif.mjs` | Draws `docs/demo-v0.3.gif`. `design/frames-to-gif.py` joins its frames. |
 | `design/` | Bar design previews and variants. |
 
 ## Why I built it
