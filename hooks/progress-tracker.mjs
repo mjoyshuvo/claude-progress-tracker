@@ -75,8 +75,8 @@ const spawned = new Map();
 // The mod's own tool, for sessions without TaskCreate / TodoWrite (the desktop app).
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
-const RULES = `# Progress bar
-Work over ~3 edits/commands, plan mode included: call ${TOOL} with {title, tasks:[3-8 short names]}, then {next:true} per finished task, {active:"name"}, {add:["found work"]}, {skip:true}, {failed:"why"}, {fixed:true}, {found:"a bug, root cause or decision worth keeping"}. Don't mention the bar.`;
+// The engine's notes on entering and leaving a mode, as the transcript files them.
+const MODE_NOTES = { plan_mode: "plan", plan_mode_exit: "default", auto_mode: "auto" };
 
 export function register(on) {
   on("session.start", async ($, e, next) => {
@@ -120,12 +120,7 @@ export function register(on) {
     return { text: "Playing a progress-tracker demo above the prompt (about 30 seconds)." };
   });
 
-  on("prompt.compose", async ($, e, next) => {
-    const result = await next(e);
-    return { sections: [...result.sections, { id: "progress-tracker:rules", text: RULES, scope: "session" }] };
-  });
-
-  // Org security mods can bypass user-tier prompt.compose, so the tool carries its own rule and stays loaded.
+  // cc-plugin-sec-default skips user-tier prompt.compose, so the tool carries its own rule and stays loaded.
   on("tool.describe", { tool: TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }));
 
   on("tool.call", { tool: TOOL }, async ($, e) => {
@@ -174,21 +169,15 @@ export function register(on) {
 
   // Plan mode: a "Planning" bar from the first prompt or tool call made in plan mode.
   // Claude's own progress_tracker list replaces its steps; until then each tool call
-  // becomes a done step, so the bar moves. The plan_mode note on every plan-mode
-  // turn is the surest sign.
-  on("prompt.attachment", { type: "plan_mode" }, async ($, e, next) => {
-    await followMode($, "plan");
+  // becomes a done step, so the bar moves. The engine's plan_mode note is the surest sign.
+  // The notes are read as the transcript keeps them: cc-plugin-sec-default skips user-tier
+  // prompt.attachment, classic.UserPromptSubmit and classic.PreToolUse hooks.
+  on("session.append", async ($, e, next) => {
+    const { message } = e;
+    const mode = message.type === "attachment" && !e.agentId ? MODE_NOTES[message.name] : undefined;
+    if (mode) await followMode($, mode);
     return next(e);
   });
-
-  // A reload asks again for every note in the transcript, old ones included, in order.
-  // The exit note that followed an old plan_mode note drops the bar that note just started.
-  for (const type of ["plan_mode_exit", "auto_mode"]) {
-    on("prompt.attachment", { type }, async ($, e, next) => {
-      await followMode($, type === "auto_mode" ? "auto" : "default");
-      return next(e);
-    });
-  }
 
   on("agent.spawn", async ($, e, next) => {
     if (e.parentAgentId) return next(e);
@@ -198,11 +187,6 @@ export function register(on) {
       spawned.set(e.tool_use_id, { id: r.agentId, type: e.subagentType, isBackground: e.background === true });
     }
     return r;
-  });
-
-  on("classic.UserPromptSubmit", async ($, e, next) => {
-    await followMode($, e.permission_mode);
-    return next(e);
   });
 
   // A permission dialog waits on the person: the bar turns amber and the pane lists it.
@@ -220,11 +204,6 @@ export function register(on) {
     if (!e.agent_id && e.notification_type === "permission_prompt") {
       await openBlock($, "permission", String(e.message ?? "Needs your permission"), { isFallback: true });
     }
-    return next(e);
-  });
-
-  on("classic.PreToolUse", async ($, e, next) => {
-    if (!e.agent_id) await followMode($, e.permission_mode);
     return next(e);
   });
 

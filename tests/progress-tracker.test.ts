@@ -59,13 +59,18 @@ function keysOf(node: any): string[] {
   return kidsOf(node).flatMap(keysOf);
 }
 
+// The engine's mode note as the transcript keeps it.
+function note($: any, name: string, agentId?: string) {
+  const message = { type: "attachment", name, content: [] };
+  return $.session.append({ message, door: "attachment", origin: { kind: "engine" }, uuid: `${name}-${Math.random()}`, agentId } as any);
+}
+
 function world(on: any) {
   let nextId = 1;
   const clock = mock.clock(on);
   on("session.start", ($: any, e: any) => ({ cwd: e.cwd }));
   on("tool.register", ($: any, e: any) => ({ value: { tool: `mcp__progress-tracker__${e.name}` } }));
   on("command.register", ($: any, e: any) => ({ value: { command: e.name } }));
-  on("classic.UserPromptSubmit", () => ({}));
   on("classic.PermissionRequest", () => ({}));
   on("classic.Notification", () => ({}));
   on("tool.call", ($: any, e: any) => {
@@ -118,7 +123,7 @@ async function tasks($: any, subjects: string[]) {
 describe("progress-tracker", () => {
   test("draws nothing until there are tasks", async ($, on) => {
     world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
     expect(textOf(await $.ui.render(BAND))).toBe("");
   });
@@ -195,7 +200,7 @@ describe("progress-tracker", () => {
 
   test("the ✕ button dismisses a row", async ($, on) => {
     world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
     await tasks($, ["Only"]);
 
@@ -273,7 +278,7 @@ describe("progress-tracker", () => {
   test("/progress-tracker-demo plays every feature, then opens its timeline and clears", async ($, on) => {
     const { clock, opened } = world(on);
     on("ui.blit", () => ({ value: {} }));
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
 
@@ -331,7 +336,7 @@ describe("progress-tracker", () => {
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     const DESK = { ...BAND, surface: "desktop" } as any;
 
-    await $.classic.UserPromptSubmit({ prompt: "plan dark mode", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     let drawn = textOf(await $.ui.render(DESK));
     expect(drawn).toContain("Planning");
     expect(drawn).toContain("Explore · 0 steps");
@@ -358,7 +363,7 @@ describe("progress-tracker", () => {
     world(on);
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     const DESK = { ...BAND, surface: "desktop" } as any;
-    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
     const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
     expect(lines).toHaveLength(1);
@@ -367,30 +372,30 @@ describe("progress-tracker", () => {
 
   test("leaving plan mode without a plan drops the Planning bar, an answered plan keeps it", async ($, on) => {
     world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     expect(textOf(await $.ui.render(DESK))).toContain("Planning");
-    await $.classic.UserPromptSubmit({ prompt: "never mind, just do it", permission_mode: "default" } as any);
+    await note($, "plan_mode_exit");
     expect(textOf(await $.ui.render(DESK))).not.toContain("Planning");
 
-    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
-    await $.classic.UserPromptSubmit({ prompt: "go", permission_mode: "default" } as any);
+    await note($, "plan_mode_exit");
     expect(textOf(await $.ui.render(DESK))).toContain("Planning: ✓ Done");
   });
 
-  test("old plan-mode notes asked again after a reload leave no Planning bar", async ($, on) => {
+  test("the plan_mode_exit note drops the Planning bar the plan_mode note started", async ($, on) => {
     world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
-    on("prompt.attachment", (_$: any, e: any) => ({ text: e.text }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    const origin = { kind: "engine" };
-    await $.prompt.attachment({ type: "plan_mode", text: "plan", origin } as any);
+    await note($, "plan_mode");
     expect(textOf(await $.ui.render(DESK))).toContain("Planning");
-    await $.prompt.attachment({ type: "plan_mode_exit", text: "exit", origin } as any);
+    await note($, "plan_mode_exit");
+    expect(textOf(await $.ui.render(DESK))).toBe("");
+    await note($, "plan_mode", "agent-1");
     expect(textOf(await $.ui.render(DESK))).toBe("");
   });
 
@@ -398,7 +403,7 @@ describe("progress-tracker", () => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     await $.tool.call({ tool: "Bash", command: "grep -r x .", description: "Find plugin files" } as any);
     await $.tool.call({ tool: "Read", file_path: "/a/b/source.mjs" } as any);
     const exploring = textOf(await $.ui.render(DESK));
@@ -418,12 +423,12 @@ describe("progress-tracker", () => {
 
   test("outside plan mode the third tool call of a turn starts a Working bar that ends green with the turn", async ($, on) => {
     world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
     on("turn.complete", () => ({ text: "" }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await $.classic.UserPromptSubmit({ prompt: "check it", permission_mode: "auto" } as any);
+    await note($, "auto_mode");
     await $.turn.start({ text: "check it", turnId: "t1" } as any);
     await $.tool.call({ tool: "Bash", command: "ls", description: "List files" } as any);
     await $.tool.call({ tool: "Read", file_path: "/a/b.md" } as any);
@@ -511,7 +516,7 @@ describe("progress-tracker", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("Fix it: Patch 1/2");
 
-    await $.classic.UserPromptSubmit({ prompt: "plan", permission_mode: "plan" } as any);
+    await note($, "plan_mode");
     await $.turn.start({ text: "plan", turnId: "t2" } as any);
     for (const f of ["d", "e", "f"]) await $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any);
     lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
@@ -687,7 +692,7 @@ describe("progress-tracker", () => {
 
   test("a finished bar hides itself after a minute", async ($, on) => {
     const { clock } = world(on);
-    on("ui.render", () => ({ type: "Box", props: { children: [] } }));
+    on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
     await tasks($, ["Only"]);
     await $.tool.call({ tool: "TaskUpdate", taskId: "1", status: "completed" } as any);
@@ -844,7 +849,7 @@ describe("progress-tracker", () => {
     on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
     const TOOL = "mcp__progress-tracker__progress_tracker";
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
-    await $.classic.UserPromptSubmit({ prompt: "fix it", permission_mode: "auto" } as any);
+    await note($, "auto_mode");
     await $.turn.start({ text: "fix it", turnId: "t1" } as any);
     for (const file of ["a", "b", "c"]) await $.tool.call({ tool: "Read", file_path: `/w/${file}.ts` } as any);
     expect(textOf(await $.ui.render(BAND))).toContain("Working · 3 steps");
