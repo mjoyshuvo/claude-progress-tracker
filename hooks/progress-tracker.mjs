@@ -15,11 +15,11 @@ const STALE_MS = 12 * 60 * 60 * 1000;
 // A finished bar stays this long, then hides itself.
 const DONE_LINGER_MS = 60 * 1000;
 
-const DOT = { working: "#a99cf5", failed: "#ef6f5c", done: "#2bb5a5", waiting: "#f0b34a" };
+const DOT = { working: "#a99cf5", failed: "#ef6f5c", done: "#7cc68a", waiting: "#f0b34a" };
 const PILL = {
   working: { bg: "#a99cf5", fg: "#1d1a2e" },
   failed: { bg: "#ef6f5c", fg: "#2a0a05" },
-  done: { bg: "#2bb5a5", fg: "#04201d" },
+  done: { bg: "#7cc68a", fg: "#14261a" },
   waiting: { bg: "#f0b34a", fg: "#2a1c05" },
 };
 
@@ -75,8 +75,6 @@ const spawned = new Map();
 // The mod's own tool, for sessions without TaskCreate / TodoWrite (the desktop app).
 const TOOL_NAME = "progress_tracker";
 const TOOL = `mcp__progress-tracker__${TOOL_NAME}`;
-// The engine's notes on entering and leaving a mode, as the transcript files them.
-const MODE_NOTES = { plan_mode: "plan", plan_mode_exit: "default", auto_mode: "auto" };
 
 export function register(on) {
   on("session.start", async ($, e, next) => {
@@ -167,16 +165,15 @@ export function register(on) {
     return { result: parts.join(", ") };
   });
 
-  // Plan mode: a "Planning" bar from the first prompt or tool call made in plan mode.
-  // Claude's own progress_tracker list replaces its steps; until then each tool call
-  // becomes a done step, so the bar moves. The engine's plan_mode note is the surest sign.
-  // The notes are read as the transcript keeps them: cc-plugin-sec-default skips user-tier
-  // prompt.attachment, classic.UserPromptSubmit and classic.PreToolUse hooks.
-  on("session.append", async ($, e, next) => {
-    const { message } = e;
-    const mode = message.type === "attachment" && !e.agentId ? MODE_NOTES[message.name] : undefined;
-    if (mode) await followMode($, mode);
-    return next(e);
+  // Plan mode: a "Planning" bar once Claude enters plan mode. Claude's own progress_tracker
+  // list replaces its steps; until then each tool call becomes a done step, so the bar moves.
+  // cc-plugin-sec-default skips user-tier hooks on every event that carries the mode
+  // (prompt.attachment, session.append, the classic hooks), so a mode the person switches
+  // to with Shift+Tab goes unseen until Claude calls ExitPlanMode.
+  on("tool.call", { tool: "EnterPlanMode" }, async ($, e, next) => {
+    const r = await next(e);
+    if (!e.agentId && r.deny === undefined) await followMode($, "plan");
+    return r;
   });
 
   on("agent.spawn", async ($, e, next) => {

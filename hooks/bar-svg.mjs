@@ -17,7 +17,7 @@ const PALETTE = {
   working: { track: "#2a2838", dot: "#b9adff", tick: "#e6e1ff", pill: "#a99cf5", ink: "#1d1a2e" },
   failed: { track: "#33242a", dot: "#ff9a8a", tick: "#ffe1db", pill: "#ef6f5c", ink: "#2a0a05" },
   waiting: { track: "#332b1f", dot: "#ffd27a", tick: "#fff0d1", pill: "#f0b34a", ink: "#2a1c05" },
-  done: { track: "#1b2f2d", dot: "#8fe0d5", tick: "#dcf5f1", pill: "#2bb5a5", ink: "#04201d" },
+  done: { track: "#22302a", dot: "#9fe0ad", tick: "#e3f7e7", pill: "#7cc68a", ink: "#14261a" },
 };
 const EMPTY_TICK = "#55545e";
 const BAND_DARK = "#212121";
@@ -80,16 +80,18 @@ export function barSvg({ width, done, total, status, pill, isMoving, skipped = [
 // A moving bar animates groups, not dots: each dot joins one of TWINKLE_GROUPS
 // groups and each group fades as one, and the glitter is a white copy of some
 // dots in SPARKLE_GROUPS groups. About a dozen animations in all, where one per
-// dot came to several hundred and made the frame stutter.
+// dot came to several hundred and made the frame stutter. A finished bar glitters
+// hardest: more dots, more groups, so the whole fill keeps catching the light.
 const TWINKLE_GROUPS = 8;
-const SPARKLE_GROUPS = 5;
+const SPARKLE_GROUPS = { working: 5, done: 8 };
 
 function dots(p, fillEnd, h, status, isMoving) {
   const top = (h - (DOT_ROWS - 1) * PITCH - DOT) / 2;
   // At most MAX_COLUMNS dot columns, so a wide bar stays under the SVG size cap.
   const step = Math.max(PITCH, fillEnd / MAX_COLUMNS);
   const twinkles = Array.from({ length: TWINKLE_GROUPS }, () => []);
-  const sparkles = Array.from({ length: SPARKLE_GROUPS }, () => []);
+  const sparkleGroups = SPARKLE_GROUPS[status] ?? 0;
+  const sparkles = Array.from({ length: sparkleGroups }, () => []);
   for (let x = PITCH; x < fillEnd - 2; x += step) {
     const ramp = Math.pow(x / Math.max(1, fillEnd), 1.6);
     for (let row = 0; row < DOT_ROWS; row++) {
@@ -99,13 +101,14 @@ function dots(p, fillEnd, h, status, isMoving) {
       const at = `x="${Math.round(x)}" y="${top + row * PITCH}" width="${DOT}" height="${DOT}" rx=".4"`;
       twinkles[Math.floor(hash(seed * 13) * TWINKLE_GROUPS)].push(`<rect ${at} fill-opacity="${opacity.toFixed(2)}"/>`);
       // Glitter: some dots, more of them near the pill, flash white for a blink.
-      if (isMoving && status === "working" && hash(seed * 53) < 0.08 + ramp * 0.22) {
-        sparkles[Math.floor(hash(seed * 71) * SPARKLE_GROUPS)].push(`<rect ${at}/>`);
+      const glitter = status === "done" ? 0.22 + ramp * 0.3 : 0.08 + ramp * 0.22;
+      if (isMoving && sparkleGroups > 0 && hash(seed * 53) < glitter) {
+        sparkles[Math.floor(hash(seed * 71) * sparkleGroups)].push(`<rect ${at}/>`);
       }
     }
   }
   if (!isMoving) return `<g fill="${p.dot}">${twinkles.flat().join("")}</g>`;
-  const slow = status === "failed" ? 1.8 : status === "done" ? 2.2 : 1;
+  const slow = status === "failed" ? 1.8 : status === "done" ? 1.5 : 1;
   const out = twinkles.map((group, i) => {
     if (group.length === 0) return "";
     const dur = ((0.35 + (i / TWINKLE_GROUPS) * 0.55) * slow).toFixed(2);
@@ -115,7 +118,7 @@ function dots(p, fillEnd, h, status, isMoving) {
   });
   sparkles.forEach((group, i) => {
     if (group.length === 0) return;
-    const dur = (0.9 + (i / SPARKLE_GROUPS) * 1.3).toFixed(2);
+    const dur = (0.9 + (i / sparkleGroups) * 1.3).toFixed(2);
     const begin = (-hash(i * 89 + 3) * Number(dur)).toFixed(2);
     const flash = `<animate attributeName="opacity" values="0;1;0;0" keyTimes="0;.06;.16;1" dur="${dur}s" begin="${begin}s" repeatCount="indefinite"/>`;
     out.push(`<g fill="#ffffff" opacity="0">${flash}${group.join("")}</g>`);

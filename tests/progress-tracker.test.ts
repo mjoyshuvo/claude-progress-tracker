@@ -59,10 +59,8 @@ function keysOf(node: any): string[] {
   return kidsOf(node).flatMap(keysOf);
 }
 
-// The engine's mode note as the transcript keeps it.
-function note($: any, name: string, agentId?: string) {
-  const message = { type: "attachment", name, content: [] };
-  return $.session.append({ message, door: "attachment", origin: { kind: "engine" }, uuid: `${name}-${Math.random()}`, agentId } as any);
+function enterPlan($: any, agentId?: string) {
+  return $.tool.call({ tool: "EnterPlanMode", agentId } as any);
 }
 
 function world(on: any) {
@@ -310,7 +308,7 @@ describe("progress-tracker", () => {
     expect(timeline).toContain("failed ×2");
     expect(timeline).toMatch(/\d+s work/);
     const gutters = svgsOf(await $.ui.render(DESK)).slice(1);
-    expect(gutters.every((svg: any) => svg.source.includes("#2f6f68"))).toBe(true);
+    expect(gutters.every((svg: any) => svg.source.includes("#3b5e47"))).toBe(true);
     expect(gutters.filter((svg: any) => svg.source.includes("Q21 11 21 22"))).toHaveLength(1);
     expect(gutters.some((svg: any) => svg.source.includes('r="7"'))).toBe(true);
     expect(opened).toContain("progress");
@@ -336,7 +334,7 @@ describe("progress-tracker", () => {
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     const DESK = { ...BAND, surface: "desktop" } as any;
 
-    await note($, "plan_mode");
+    await enterPlan($);
     let drawn = textOf(await $.ui.render(DESK));
     expect(drawn).toContain("Planning");
     expect(drawn).toContain("Explore · 0 steps");
@@ -363,47 +361,39 @@ describe("progress-tracker", () => {
     world(on);
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
     const DESK = { ...BAND, surface: "desktop" } as any;
-    await note($, "plan_mode");
+    await enterPlan($);
     await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
     const lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("Planning: ✓ Done");
   });
 
-  test("leaving plan mode without a plan drops the Planning bar, an answered plan keeps it", async ($, on) => {
+  test("an answered plan keeps its finished Planning bar", async ($, on) => {
     world(on);
     on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await note($, "plan_mode");
-    expect(textOf(await $.ui.render(DESK))).toContain("Planning");
-    await note($, "plan_mode_exit");
-    expect(textOf(await $.ui.render(DESK))).not.toContain("Planning");
-
-    await note($, "plan_mode");
+    await enterPlan($);
     await $.tool.call({ tool: "ExitPlanMode", plan: "1. a" } as any);
-    await note($, "plan_mode_exit");
     expect(textOf(await $.ui.render(DESK))).toContain("Planning: ✓ Done");
   });
 
-  test("the plan_mode_exit note drops the Planning bar the plan_mode note started", async ($, on) => {
+  test("EnterPlanMode starts a Planning bar, a sub-agent's starts none", async ($, on) => {
     world(on);
     on("ui.render", () => ({ type: "Box", props: {}, children: [] }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await note($, "plan_mode");
+    await enterPlan($, "agent-1");
+    expect(textOf(await $.ui.render(DESK))).toBe("");
+    await enterPlan($);
     expect(textOf(await $.ui.render(DESK))).toContain("Planning");
-    await note($, "plan_mode_exit");
-    expect(textOf(await $.ui.render(DESK))).toBe("");
-    await note($, "plan_mode", "agent-1");
-    expect(textOf(await $.ui.render(DESK))).toBe("");
   });
 
   test("in plan mode each tool call becomes a step, until Claude sends its own list", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await note($, "plan_mode");
+    await enterPlan($);
     await $.tool.call({ tool: "Bash", command: "grep -r x .", description: "Find plugin files" } as any);
     await $.tool.call({ tool: "Read", file_path: "/a/b/source.mjs" } as any);
     const exploring = textOf(await $.ui.render(DESK));
@@ -428,7 +418,6 @@ describe("progress-tracker", () => {
     on("turn.complete", () => ({ text: "" }));
     const DESK = { ...BAND, surface: "desktop" } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
-    await note($, "auto_mode");
     await $.turn.start({ text: "check it", turnId: "t1" } as any);
     await $.tool.call({ tool: "Bash", command: "ls", description: "List files" } as any);
     await $.tool.call({ tool: "Read", file_path: "/a/b.md" } as any);
@@ -516,7 +505,7 @@ describe("progress-tracker", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("Fix it: Patch 1/2");
 
-    await note($, "plan_mode");
+    await enterPlan($);
     await $.turn.start({ text: "plan", turnId: "t2" } as any);
     for (const f of ["d", "e", "f"]) await $.tool.call({ tool: "Read", file_path: `/${f}.md` } as any);
     lines = textOf(await $.ui.render(DESK)).split("\n").filter(Boolean);
@@ -849,7 +838,6 @@ describe("progress-tracker", () => {
     on("turn.start", (_$: any, e: any) => ({ turnId: e.turnId }));
     const TOOL = "mcp__progress-tracker__progress_tracker";
     await $.session.start({ surface: "terminal", cwd: "/work" } as any);
-    await note($, "auto_mode");
     await $.turn.start({ text: "fix it", turnId: "t1" } as any);
     for (const file of ["a", "b", "c"]) await $.tool.call({ tool: "Read", file_path: `/w/${file}.ts` } as any);
     expect(textOf(await $.ui.render(BAND))).toContain("Working · 3 steps");
@@ -911,7 +899,7 @@ describe("progress-tracker", () => {
     expect(svg.source.match(/<animate /g)?.length ?? 0).toBeLessThanOrEqual(14);
   });
 
-  test("a finished bar's task breakdown is teal and animates once, then rests", async ($, on) => {
+  test("a finished bar's task breakdown is green and animates once, then rests", async ($, on) => {
     world(on);
     const DESK = { ...BAND, surface: "desktop", props: { ...BAND.props, isWorking: false } } as any;
     await $.session.start({ surface: "desktop", cwd: "/work" } as any);
@@ -924,11 +912,11 @@ describe("progress-tracker", () => {
     const steps = svgs.filter((svg: any) => svg.alt === "step");
     expect(steps).toHaveLength(2);
     for (const svg of steps) {
-      expect(svg.source).toContain("#2bb5a5");
+      expect(svg.source).toContain("#7cc68a");
       expect(svg.source).not.toContain("indefinite");
     }
-    expect(svgs[0].source).toContain("#2bb5a5");
-    expect(svgs[0].source).not.toContain("#7cc68a");
+    expect(svgs[0].source).toContain("#7cc68a");
+    expect(svgs[0].source).not.toContain("#2bb5a5");
   });
 
   test("a state write that never settles holds the next update for a few seconds, not forever", async ($, on) => {

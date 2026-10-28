@@ -13,11 +13,11 @@ export const GUTTER_WIDTH = 30;
 
 const MAIN_X = 7;
 const BRANCH_X = 21;
-const LINE = "#2f6f68";
+const LINE = "#3b5e47";
 const PENDING = "#5d5c68";
 const ACTIVE = "#a99cf5";
 const FAILED = "#ef6f5c";
-const DONE = "#2bb5a5";
+const DONE = "#7cc68a";
 const AGENT = "#a99cf5";
 const BAND_DARK = "#212121";
 
@@ -61,7 +61,7 @@ export function timelineSvg({ pos, isFirst, isLast, isAgent, isSkipped, status =
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${GUTTER_WIDTH}" height="${h}" viewBox="0 0 ${GUTTER_WIDTH} ${h}">${parts.join("")}</svg>`;
 }
 
-// Done: a teal dot that rings once. A step that failed on the way keeps a coral ring;
+// Done: a green dot that rings once. A step that failed on the way keeps a coral ring;
 // the running step is purple; pending and skipped steps are hollow.
 function dot(x, y, { isSkipped, status, failures }, popAt) {
   const pop = `<animate attributeName="r" values="0;5;4" keyTimes="0;.7;1" begin="${popAt}s" dur=".25s" fill="freeze"/>`;

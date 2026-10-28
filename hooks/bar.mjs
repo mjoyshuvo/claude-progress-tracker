@@ -38,9 +38,9 @@ const PAL = {
     twP: 1600, shimmer: false, breathe: 0, twinkle: 0.08,
   },
   done: {
-    empty: 0x29292f, fill: 0x1b2f2d, dotLo: 0x2f5a55, dotHi: 0xc8f3ec,
-    tickFill: 0x7fd6ca, tickEmpty: 0x56555f,
-    pill: 0x3cc0b0, pillMid: 0x2fae9f, pillLip: 0x228a7e, ink: 0x04201d,
+    empty: 0x29292f, fill: 0x22322a, dotLo: 0x3b5e47, dotHi: 0xd2f6da,
+    tickFill: 0x95dca8, tickEmpty: 0x56555f,
+    pill: 0x8fd19e, pillMid: 0x7cc08c, pillLip: 0x5c9f6d, ink: 0x0e2414,
     twP: 0, shimmer: false, breathe: 1, twinkle: 0,
   },
   waiting: {

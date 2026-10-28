@@ -123,7 +123,7 @@ claude plugin disable plan-progress@zycck-mods
 3. A sub-agent runs, and the pill shows `· 1 agent`.
 4. The "Test" step fails twice. The row turns red, the pill shows `×2`, and the **Found** tab lists the failure and a finding.
 5. The step recovers. Then the row turns amber, and **Blocked on me** lists `Allow npm publish` until it is answered.
-6. The bar finishes teal. About 12 seconds later, the row and its pane entries clear.
+6. The bar finishes green. About 12 seconds later, the row and its pane entries clear.
 
 The demo bar moves even while Claude is idle.
 
@@ -140,7 +140,7 @@ The colour of a row tells you its state:
 | Purple | Claude is working. | `Build 2/5` or `Working · 12 steps` |
 | Red | A check failed in the current task. | `✕ Verify 1/2` or `✕ Test 3/5 ×3` |
 | Amber | Claude waits for you. | `Waiting for you` or `Waiting for approval` |
-| Teal | Every task is done. | `✓ Done 5/5` or `✓ Done · 12 steps` |
+| Green | Every task is done. | `✓ Done 5/5` or `✓ Done · 12 steps` |
 
 The numbers after the bar are all measured:
 
