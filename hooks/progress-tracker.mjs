@@ -1480,9 +1480,10 @@ function base64Of(bytes) {
 // The finished list as timeline rows: each task, then the sub-agents it ran on a branch.
 // Steps whose run times overlap ran in parallel and share a branch too.
 // The small labels on a breakdown row: who ran it, and how often it failed first.
+// Coloured text with no fill of its own, so it reads on any theme's band.
 const CHIP = {
-  agent: { color: "#b9adff", background: "#2a2838" },
-  failed: { color: "#ff9a8a", background: "#33242a" },
+  agent: { color: "#b9adff" },
+  failed: { color: "#ff9a8a" },
 };
 
 function chipsOf(entry) {

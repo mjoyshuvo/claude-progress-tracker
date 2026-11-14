@@ -19,7 +19,8 @@ const ACTIVE = "#a99cf5";
 const FAILED = "#ef6f5c";
 const DONE = "#7cc68a";
 const AGENT = "#a99cf5";
-const BAND_DARK = "#212121";
+const LINE_LIGHT = "#8fbf9c";
+const PENDING_LIGHT = "#a3a1ad";
 
 const STAGGER = 0.07; // seconds between rows as the line draws in
 const DRAW = 0.18;
@@ -32,15 +33,21 @@ export function timelineSvg({ pos, isFirst, isLast, isAgent, isSkipped, status =
   const isBranch = pos !== "main" && pos !== "fork";
   const x = isBranch ? BRANCH_X : MAIN_X;
   const drawAt = index * STAGGER;
+  // A hollow dot (pending or skipped) is a ring with nothing painted inside: the line is
+  // cut around it by a mask, so the band (any theme's) shows through.
+  const isHollow = !isAgent && (isSkipped || status === "pending");
   const parts = [
-    // Drawn in a sandboxed frame; without a matching color-scheme the browser paints an
-    // opaque white backdrop. Dark, the corners take the band's colour.
-    `<style>:root{color-scheme:light dark}.bd{fill:none}@media (prefers-color-scheme:dark){.bd{fill:${BAND_DARK}}}</style>`,
-    `<rect class="bd" width="${GUTTER_WIDTH}" height="${h}"/>`,
+    // Drawn in a sandboxed frame; the matching color-scheme keeps the browser from painting
+    // an opaque backdrop. The line and pending ring follow light or dark mode by class.
+    `<style>:root{color-scheme:light dark}.ln{stroke:${LINE}}.pd{stroke:${PENDING}}`,
+    `@media (prefers-color-scheme:light){.ln{stroke:${LINE_LIGHT}}.pd{stroke:${PENDING_LIGHT}}}</style>`,
+    isHollow
+      ? `<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="${GUTTER_WIDTH}" height="${h}"><rect width="${GUTTER_WIDTH}" height="${h}" fill="#fff"/><circle cx="${x}" cy="${mid}" r="5" fill="#000"/></mask></defs>`
+      : "",
   ];
   const draw = `<animate attributeName="stroke-dashoffset" from="1" to="0" begin="${drawAt}s" dur="${DRAW}s" fill="freeze"/>`;
   const stroke = (shape) =>
-    parts.push(`${shape} fill="none" stroke="${LINE}" stroke-width="1.5" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1">${draw}</path>`);
+    parts.push(`${shape} class="ln"${isHollow ? ` mask="url(#cut)"` : ""} fill="none" stroke-width="1.5" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1">${draw}</path>`);
   const line = (x1, y1, x2, y2) => stroke(`<path d="M${x1} ${y1} L${x2} ${y2}"`);
   const curve = (d) => stroke(`<path d="${d}"`);
 
@@ -66,8 +73,8 @@ export function timelineSvg({ pos, isFirst, isLast, isAgent, isSkipped, status =
 function dot(x, y, { isSkipped, status, failures }, popAt) {
   const pop = `<animate attributeName="r" values="0;5;4" keyTimes="0;.7;1" begin="${popAt}s" dur=".25s" fill="freeze"/>`;
   if (isSkipped || status === "pending") {
-    const edge = isSkipped ? DONE : PENDING;
-    return `<circle cx="${x}" cy="${y}" r="0" fill="${BAND_DARK}" stroke="${edge}" stroke-opacity=".7" stroke-width="1.5">${pop}</circle>`;
+    const edge = isSkipped ? `stroke="${DONE}"` : `class="pd"`;
+    return `<circle cx="${x}" cy="${y}" r="0" fill="none" ${edge} stroke-opacity=".7" stroke-width="1.5">${pop}</circle>`;
   }
   const fill = status === "in_progress" ? ACTIVE : DONE;
   const scar = failures > 0 ? `<circle cx="${x}" cy="${y}" r="7" fill="none" stroke="${FAILED}" stroke-width="1.5" stroke-opacity=".75"/>` : "";
